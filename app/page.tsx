@@ -27,6 +27,7 @@ import {
   type ToolPart,
 } from "@/components/ai-elements/tool";
 import { cn } from "@/lib/utils";
+import { Pencil, RotateCcw } from "lucide-react";
 
 type ToolCallStatus = "running" | "done" | "error";
 
@@ -96,6 +97,8 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [editingId, setEditingId] = useState<string | null>(null);
   const sessionRef = useRef<RealtimeSession | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -220,6 +223,38 @@ export default function Home() {
 
   function clearTranscript() {
     setTranscript([]);
+    setEdits({});
+    setEditingId(null);
+  }
+
+  function startEdit(id: string) {
+    setEditingId(id);
+  }
+
+  function saveEdit(id: string, originalText: string, newText: string) {
+    const trimmed = newText.trim();
+    setEdits((prev) => {
+      const next = { ...prev };
+      if (trimmed.length === 0 || trimmed === originalText.trim()) {
+        delete next[id];
+      } else {
+        next[id] = trimmed;
+      }
+      return next;
+    });
+    setEditingId(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+  }
+
+  function undoEdit(id: string) {
+    setEdits((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   }
 
   return (
@@ -307,7 +342,16 @@ export default function Home() {
             ) : (
               <ol className="flex flex-col gap-2 pr-3">
                 {transcript.map((m) => (
-                  <TranscriptLine key={m.id} message={m} />
+                  <TranscriptLine
+                    key={m.id}
+                    message={m}
+                    editedText={edits[m.id]}
+                    isEditing={editingId === m.id}
+                    onStartEdit={() => startEdit(m.id)}
+                    onSaveEdit={(newText) => saveEdit(m.id, m.text, newText)}
+                    onCancelEdit={cancelEdit}
+                    onUndoEdit={() => undoEdit(m.id)}
+                  />
                 ))}
               </ol>
             )}
@@ -406,25 +450,99 @@ function ToolCallCard({ call }: { call: ToolCall }) {
   );
 }
 
-function TranscriptLine({ message }: { message: TranscriptMessage }) {
+function TranscriptLine({
+  message,
+  editedText,
+  isEditing,
+  onStartEdit,
+  onSaveEdit,
+  onCancelEdit,
+  onUndoEdit,
+}: {
+  message: TranscriptMessage;
+  editedText?: string;
+  isEditing: boolean;
+  onStartEdit: () => void;
+  onSaveEdit: (newText: string) => void;
+  onCancelEdit: () => void;
+  onUndoEdit: () => void;
+}) {
   const isUser = message.role === "user";
   const isStreaming = message.status === "in_progress";
   const label = isUser ? "You" : "Earshot";
   const labelClass = isUser ? "text-foreground" : "text-primary";
   const textClass = isStreaming ? "text-muted-foreground" : "text-foreground";
-  const displayText =
-    message.text.trim().length > 0
-      ? message.text
+  const effectiveText = editedText ?? message.text;
+  const isEdited = editedText != null;
+  const canEdit = isUser && !isStreaming && effectiveText.trim().length > 0;
+
+  if (isEditing && isUser) {
+    return (
+      <li className="text-sm leading-relaxed">
+        <span className={cn("mr-2 font-semibold", labelClass)}>{label}:</span>
+        <input
+          autoFocus
+          defaultValue={effectiveText}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onSaveEdit((e.target as HTMLInputElement).value);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onCancelEdit();
+            }
+          }}
+          onBlur={(e) => onSaveEdit(e.target.value)}
+          aria-label="Edit transcript line"
+          className="inline-block w-[min(32rem,85%)] rounded border border-border bg-background px-2 py-0.5 text-sm outline-none focus:border-primary"
+        />
+      </li>
+    );
+  }
+
+  const placeholderText =
+    effectiveText.trim().length > 0
+      ? effectiveText
       : isStreaming
       ? "\u2026"
       : "";
 
   return (
-    <li className="text-sm leading-relaxed">
-      <span className={cn("mr-2 font-semibold", labelClass)}>{label}:</span>
-      <span className={textClass}>{displayText}</span>
-      {isStreaming && (
-        <span className="ml-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400 align-middle" />
+    <li className="group flex items-start gap-2 text-sm leading-relaxed">
+      <div className="flex-1">
+        <span className={cn("mr-2 font-semibold", labelClass)}>{label}:</span>
+        <span className={textClass}>{placeholderText}</span>
+        {isStreaming && (
+          <span className="ml-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400 align-middle" />
+        )}
+        {isEdited && (
+          <>
+            <Badge
+              variant="outline"
+              className="ml-2 px-1.5 py-0 text-[10px] font-normal"
+            >
+              edited
+            </Badge>
+            <button
+              type="button"
+              onClick={onUndoEdit}
+              aria-label="Undo edit"
+              className="ml-1 inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+            >
+              <RotateCcw className="h-3 w-3" />
+            </button>
+          </>
+        )}
+      </div>
+      {canEdit && !isEdited && (
+        <button
+          type="button"
+          onClick={onStartEdit}
+          aria-label="Edit transcript line"
+          className="invisible mt-0.5 inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:text-foreground group-hover:visible"
+        >
+          <Pencil className="h-3 w-3" />
+        </button>
       )}
     </li>
   );
