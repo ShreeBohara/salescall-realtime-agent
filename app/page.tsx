@@ -18,6 +18,14 @@ import {
   CardContent,
 } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Tool,
+  ToolContent,
+  ToolHeader,
+  ToolInput,
+  ToolOutput,
+  type ToolPart,
+} from "@/components/ai-elements/tool";
 import { cn } from "@/lib/utils";
 
 type ToolCallStatus = "running" | "done" | "error";
@@ -77,13 +85,10 @@ function safeParseJson(raw: string): { parsed: unknown; ok: boolean } {
   }
 }
 
-function formatJson(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
+function toolStateFromStatus(status: ToolCallStatus): ToolPart["state"] {
+  if (status === "done") return "output-available";
+  if (status === "error") return "output-error";
+  return "input-available";
 }
 
 export default function Home() {
@@ -119,6 +124,7 @@ export default function Home() {
         name: "Earshot",
         instructions: [
           "You are Earshot, a friendly sales copilot for a sales rep.",
+          "Always respond in English, regardless of what you think you hear. If the user explicitly asks you to switch languages, acknowledge briefly in English and then switch.",
           "Keep your responses short and conversational.",
           "Greet the user warmly when they connect.",
           "",
@@ -375,77 +381,28 @@ function ToolCallCard({ call }: { call: ToolCall }) {
   const elapsedMs =
     call.endedAt != null ? call.endedAt - call.startedAt : undefined;
 
-  const statusVariant =
-    call.status === "done"
-      ? "default"
-      : call.status === "error"
-      ? "destructive"
-      : "outline";
-  const statusLabel =
-    call.status === "running"
-      ? "running…"
-      : call.status === "done"
-      ? "done"
-      : "error";
+  const state = toolStateFromStatus(call.status);
+
+  const output =
+    call.status === "done" ? call.parsedResult ?? call.result : undefined;
+  const errorText =
+    call.status === "error" ? call.result ?? "Tool error" : undefined;
 
   return (
     <li>
-      <Card size="sm">
-        <CardHeader>
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusDot status={call.status} />
-            <span className="font-mono text-sm font-semibold">{call.name}</span>
-            <Badge variant={statusVariant} className="ml-1">
-              {statusLabel}
-            </Badge>
-            <span className="ml-auto font-mono text-xs text-muted-foreground">
-              {elapsedMs != null ? `${elapsedMs} ms` : "\u00A0"}
-            </span>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <JsonPane label="Arguments" value={call.args} />
-            <JsonPane
-              label="Result"
-              value={
-                call.status === "done"
-                  ? call.parsedResult ?? call.result
-                  : undefined
-              }
-              placeholder={call.status === "done" ? undefined : "waiting…"}
-            />
-          </div>
-        </CardContent>
-      </Card>
+      <Tool defaultOpen className="mb-0 bg-card">
+        <ToolHeader type="dynamic-tool" toolName={call.name} state={state} />
+        <ToolContent>
+          <ToolInput input={call.args} />
+          <ToolOutput output={output as never} errorText={errorText} />
+          {elapsedMs != null && (
+            <div className="text-right font-mono text-[10px] text-muted-foreground">
+              {elapsedMs} ms
+            </div>
+          )}
+        </ToolContent>
+      </Tool>
     </li>
-  );
-}
-
-function JsonPane({
-  label,
-  value,
-  placeholder,
-}: {
-  label: string;
-  value: unknown;
-  placeholder?: string;
-}) {
-  return (
-    <div>
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-      {value != null ? (
-        <pre className="overflow-x-auto rounded-md bg-muted/50 p-2 font-mono text-xs text-foreground">
-          {formatJson(value)}
-        </pre>
-      ) : (
-        <div className="rounded-md bg-muted/30 p-2 text-xs italic text-muted-foreground">
-          {placeholder ?? "\u2014"}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -473,17 +430,3 @@ function TranscriptLine({ message }: { message: TranscriptMessage }) {
   );
 }
 
-function StatusDot({ status }: { status: ToolCallStatus }) {
-  const colorClass =
-    status === "running"
-      ? "bg-amber-400 animate-pulse"
-      : status === "done"
-      ? "bg-emerald-400"
-      : "bg-destructive";
-  return (
-    <span
-      aria-label={status}
-      className={cn("inline-block h-2 w-2 rounded-full", colorClass)}
-    />
-  );
-}
