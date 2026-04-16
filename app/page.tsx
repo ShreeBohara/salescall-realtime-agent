@@ -8,6 +8,17 @@ import {
 } from "@openai/agents-realtime";
 import { saveNote } from "./lib/tools/saveNote";
 import { createFollowUpTask } from "./lib/tools/createFollowUpTask";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardAction,
+  CardContent,
+} from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 
 type ToolCallStatus = "running" | "done" | "error";
 
@@ -81,11 +92,16 @@ export default function Home() {
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const sessionRef = useRef<RealtimeSession | null>(null);
-  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+    const el = transcriptScrollRef.current;
+    if (!el) return;
+    const viewport = el.querySelector<HTMLDivElement>(
+      "[data-slot=scroll-area-viewport]"
+    );
+    if (viewport) {
+      viewport.scrollTop = viewport.scrollHeight;
     }
   }, [transcript]);
 
@@ -201,117 +217,157 @@ export default function Home() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-8 p-6 sm:p-8">
-      <header className="flex flex-col items-center gap-2 pt-8 text-center">
-        <h1 className="text-4xl font-bold tracking-tight">Earshot</h1>
-        <p className="text-sm text-gray-500">Voice-first sales copilot</p>
+    <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-6 p-6 sm:p-8">
+      <header className="flex flex-col items-center gap-2 pt-6 text-center">
+        <h1 className="font-heading text-4xl font-semibold tracking-tight">
+          Earshot
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Voice-first sales copilot
+        </p>
       </header>
 
       <section className="flex flex-col items-center gap-4">
-        <div className="text-sm">
-          Status:{" "}
-          <span className="font-mono font-semibold">{status}</span>
-        </div>
+        <StatusBadge status={status} />
 
         {status === "idle" && (
-          <button
-            onClick={connect}
-            className="rounded-full bg-black px-8 py-4 text-white hover:bg-gray-800"
-          >
+          <Button size="lg" onClick={connect} className="h-12 rounded-full px-8">
             Start talking
-          </button>
+          </Button>
         )}
 
         {status === "connecting" && (
-          <button
+          <Button
+            size="lg"
+            variant="outline"
             disabled
-            className="rounded-full bg-gray-400 px-8 py-4 text-white"
+            className="h-12 rounded-full px-8"
           >
-            Connecting...
-          </button>
+            Connecting…
+          </Button>
         )}
 
         {status === "connected" && (
-          <button
+          <Button
+            size="lg"
+            variant="destructive"
             onClick={disconnect}
-            className="rounded-full bg-red-500 px-8 py-4 text-white hover:bg-red-600"
+            className="h-12 rounded-full px-8"
           >
             End call
-          </button>
+          </Button>
         )}
 
-        {error && <div className="text-sm text-red-500">Error: {error}</div>}
+        {error && (
+          <div className="text-xs text-destructive">Error: {error}</div>
+        )}
 
-        <p className="max-w-md text-center text-xs text-gray-400">
+        <p className="max-w-md text-center text-xs text-muted-foreground">
           Click &quot;Start talking&quot; and allow microphone access. Try:{" "}
-          <em>&quot;Save a note that Acme is interested in annual prepay&quot;</em> or{" "}
-          <em>&quot;Remind me to email Acme&apos;s CFO on Friday about pricing.&quot;</em>
+          <em>&quot;Save a note that Acme is interested in annual prepay&quot;</em>{" "}
+          or{" "}
+          <em>
+            &quot;Remind me to email Acme&apos;s CFO on Friday about pricing.&quot;
+          </em>
         </p>
       </section>
 
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-600">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
             Transcript
-          </h2>
+          </CardTitle>
           {transcript.length > 0 && (
-            <button
-              onClick={clearTranscript}
-              className="text-xs text-gray-400 hover:text-gray-600"
-            >
-              Clear
-            </button>
+            <CardAction>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearTranscript}
+                className="text-muted-foreground"
+              >
+                Clear
+              </Button>
+            </CardAction>
           )}
-        </div>
+        </CardHeader>
+        <CardContent>
+          <ScrollArea ref={transcriptScrollRef} className="h-72">
+            {transcript.length === 0 ? (
+              <div className="flex h-full min-h-40 items-center justify-center text-center text-sm text-muted-foreground">
+                {status === "connected"
+                  ? "Listening… say something."
+                  : "Start a call to see the live transcript."}
+              </div>
+            ) : (
+              <ol className="flex flex-col gap-2 pr-3">
+                {transcript.map((m) => (
+                  <TranscriptLine key={m.id} message={m} />
+                ))}
+              </ol>
+            )}
+          </ScrollArea>
+        </CardContent>
+      </Card>
 
-        <div
-          ref={transcriptRef}
-          className="max-h-80 min-h-32 overflow-y-auto rounded-lg border border-gray-200 bg-white p-4"
-        >
-          {transcript.length === 0 ? (
-            <div className="flex h-full min-h-24 items-center justify-center text-center text-sm text-gray-400">
-              {status === "connected"
-                ? "Listening\u2026 say something."
-                : "Start a call to see the live transcript."}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
+            Agent actions
+          </CardTitle>
+          {toolCalls.length > 0 && (
+            <CardAction>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearToolCalls}
+                className="text-muted-foreground"
+              >
+                Clear
+              </Button>
+            </CardAction>
+          )}
+        </CardHeader>
+        <CardContent>
+          {toolCalls.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+              No tool calls yet. Ask the agent to save a note or set a reminder.
             </div>
           ) : (
-            <ol className="flex flex-col gap-2">
-              {transcript.map((m) => (
-                <TranscriptLine key={m.id} message={m} />
+            <ol className="flex flex-col gap-3">
+              {toolCalls.map((call) => (
+                <ToolCallCard key={call.id} call={call} />
               ))}
             </ol>
           )}
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-600">
-            Agent actions
-          </h2>
-          {toolCalls.length > 0 && (
-            <button
-              onClick={clearToolCalls}
-              className="text-xs text-gray-400 hover:text-gray-600"
-            >
-              Clear
-            </button>
-          )}
-        </div>
-
-        {toolCalls.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-gray-200 p-6 text-center text-sm text-gray-400">
-            No tool calls yet. Ask the agent to save a note.
-          </div>
-        ) : (
-          <ol className="flex flex-col gap-2">
-            {toolCalls.map((call) => (
-              <ToolCallCard key={call.id} call={call} />
-            ))}
-          </ol>
-        )}
-      </section>
+        </CardContent>
+      </Card>
     </main>
+  );
+}
+
+function StatusBadge({
+  status,
+}: {
+  status: "idle" | "connecting" | "connected";
+}) {
+  const variant =
+    status === "connected"
+      ? "default"
+      : status === "connecting"
+      ? "outline"
+      : "secondary";
+  const dotClass =
+    status === "connected"
+      ? "bg-emerald-400 animate-pulse"
+      : status === "connecting"
+      ? "bg-amber-400 animate-pulse"
+      : "bg-muted-foreground/60";
+
+  return (
+    <Badge variant={variant} className="gap-2 px-3 py-1 font-mono text-xs">
+      <span className={cn("inline-block h-1.5 w-1.5 rounded-full", dotClass)} />
+      {status}
+    </Badge>
   );
 }
 
@@ -319,45 +375,77 @@ function ToolCallCard({ call }: { call: ToolCall }) {
   const elapsedMs =
     call.endedAt != null ? call.endedAt - call.startedAt : undefined;
 
-  return (
-    <li className="rounded-lg border border-gray-200 bg-white p-3 text-left shadow-sm">
-      <div className="flex items-center gap-2">
-        <StatusDot status={call.status} />
-        <span className="font-mono text-sm font-semibold">{call.name}</span>
-        <span className="ml-auto font-mono text-xs text-gray-400">
-          {call.status === "running"
-            ? "running…"
-            : elapsedMs != null
-            ? `${elapsedMs} ms`
-            : call.status}
-        </span>
-      </div>
+  const statusVariant =
+    call.status === "done"
+      ? "default"
+      : call.status === "error"
+      ? "destructive"
+      : "outline";
+  const statusLabel =
+    call.status === "running"
+      ? "running…"
+      : call.status === "done"
+      ? "done"
+      : "error";
 
-      <div className="mt-2 grid gap-2 sm:grid-cols-2">
-        <div>
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
-            Arguments
+  return (
+    <li>
+      <Card size="sm">
+        <CardHeader>
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusDot status={call.status} />
+            <span className="font-mono text-sm font-semibold">{call.name}</span>
+            <Badge variant={statusVariant} className="ml-1">
+              {statusLabel}
+            </Badge>
+            <span className="ml-auto font-mono text-xs text-muted-foreground">
+              {elapsedMs != null ? `${elapsedMs} ms` : "\u00A0"}
+            </span>
           </div>
-          <pre className="overflow-x-auto rounded bg-gray-50 p-2 font-mono text-xs text-gray-800">
-            {formatJson(call.args)}
-          </pre>
-        </div>
-        <div>
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
-            Result
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <JsonPane label="Arguments" value={call.args} />
+            <JsonPane
+              label="Result"
+              value={
+                call.status === "done"
+                  ? call.parsedResult ?? call.result
+                  : undefined
+              }
+              placeholder={call.status === "done" ? undefined : "waiting…"}
+            />
           </div>
-          {call.status === "done" ? (
-            <pre className="overflow-x-auto rounded bg-gray-50 p-2 font-mono text-xs text-gray-800">
-              {formatJson(call.parsedResult ?? call.result)}
-            </pre>
-          ) : (
-            <div className="rounded bg-gray-50 p-2 text-xs italic text-gray-400">
-              waiting…
-            </div>
-          )}
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     </li>
+  );
+}
+
+function JsonPane({
+  label,
+  value,
+  placeholder,
+}: {
+  label: string;
+  value: unknown;
+  placeholder?: string;
+}) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      {value != null ? (
+        <pre className="overflow-x-auto rounded-md bg-muted/50 p-2 font-mono text-xs text-foreground">
+          {formatJson(value)}
+        </pre>
+      ) : (
+        <div className="rounded-md bg-muted/30 p-2 text-xs italic text-muted-foreground">
+          {placeholder ?? "\u2014"}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -365,8 +453,8 @@ function TranscriptLine({ message }: { message: TranscriptMessage }) {
   const isUser = message.role === "user";
   const isStreaming = message.status === "in_progress";
   const label = isUser ? "You" : "Earshot";
-  const labelClass = isUser ? "text-gray-900" : "text-indigo-600";
-  const textClass = isStreaming ? "text-gray-400" : "text-gray-800";
+  const labelClass = isUser ? "text-foreground" : "text-primary";
+  const textClass = isStreaming ? "text-muted-foreground" : "text-foreground";
   const displayText =
     message.text.trim().length > 0
       ? message.text
@@ -376,7 +464,7 @@ function TranscriptLine({ message }: { message: TranscriptMessage }) {
 
   return (
     <li className="text-sm leading-relaxed">
-      <span className={`mr-2 font-semibold ${labelClass}`}>{label}:</span>
+      <span className={cn("mr-2 font-semibold", labelClass)}>{label}:</span>
       <span className={textClass}>{displayText}</span>
       {isStreaming && (
         <span className="ml-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400 align-middle" />
@@ -390,12 +478,12 @@ function StatusDot({ status }: { status: ToolCallStatus }) {
     status === "running"
       ? "bg-amber-400 animate-pulse"
       : status === "done"
-      ? "bg-emerald-500"
-      : "bg-red-500";
+      ? "bg-emerald-400"
+      : "bg-destructive";
   return (
     <span
       aria-label={status}
-      className={`inline-block h-2.5 w-2.5 rounded-full ${colorClass}`}
+      className={cn("inline-block h-2 w-2 rounded-full", colorClass)}
     />
   );
 }
