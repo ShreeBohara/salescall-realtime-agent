@@ -2,6 +2,7 @@
 
 import { useState, useRef } from "react";
 import { RealtimeAgent, RealtimeSession } from "@openai/agents-realtime";
+import { saveNote } from "./lib/tools/saveNote";
 
 export default function Home() {
   const [status, setStatus] = useState<"idle" | "connecting" | "connected">("idle");
@@ -20,12 +21,35 @@ export default function Home() {
 
       const agent = new RealtimeAgent({
         name: "Earshot",
-        instructions:
-          "You are Earshot, a friendly sales copilot. Keep your responses short and conversational. Greet the user warmly when they connect.",
+        instructions: [
+          "You are Earshot, a friendly sales copilot for a sales rep.",
+          "Keep your responses short and conversational.",
+          "Greet the user warmly when they connect.",
+          "",
+          "You have one tool available: `save_note`. Use it whenever the rep explicitly asks to capture a note, save a takeaway, record an observation, or log something from the call.",
+          "When you call `save_note`, give a spoken confirmation out loud (e.g. \"Saved.\") so the rep knows it worked.",
+          "Do not call `save_note` unless the rep asked for a note — don't save summaries on your own initiative yet.",
+        ].join("\n"),
+        tools: [saveNote],
       });
 
       const session = new RealtimeSession(agent, {
         model: "gpt-realtime",
+      });
+
+      session.on("agent_tool_start", (_ctx, _agent, tool, details) => {
+        console.log("[agent_tool_start]", {
+          tool: tool.name,
+          toolCall: details.toolCall,
+        });
+      });
+
+      session.on("agent_tool_end", (_ctx, _agent, tool, result, details) => {
+        console.log("[agent_tool_end]", {
+          tool: tool.name,
+          result,
+          toolCall: details.toolCall,
+        });
       });
 
       await session.connect({ apiKey: ephemeralKey });
