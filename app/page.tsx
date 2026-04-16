@@ -7,6 +7,7 @@ import {
   type RealtimeItem,
 } from "@openai/agents-realtime";
 import { saveNote } from "./lib/tools/saveNote";
+import { createFollowUpTask } from "./lib/tools/createFollowUpTask";
 
 type ToolCallStatus = "running" | "done" | "error";
 
@@ -105,11 +106,16 @@ export default function Home() {
           "Keep your responses short and conversational.",
           "Greet the user warmly when they connect.",
           "",
-          "You have one tool available: `save_note`. Use it whenever the rep explicitly asks to capture a note, save a takeaway, record an observation, or log something from the call.",
-          "When you call `save_note`, give a spoken confirmation out loud (e.g. \"Saved.\") so the rep knows it worked.",
-          "Do not call `save_note` unless the rep asked for a note — don't save summaries on your own initiative yet.",
+          "You have two tools available:",
+          "",
+          "1. `save_note` — use when the rep asks to capture, save, log, or record a note, takeaway, observation, or piece of information from the call.",
+          "",
+          "2. `create_follow_up_task` — use when the rep asks to set a reminder, schedule a follow-up, or create a task for later (e.g. \"remind me to call Acme on Friday\", \"schedule a follow-up with the CFO next week\"). Always capture the customer, the when, and a short description. Infer the channel (email/phone/calendar/other) from context, or use \"other\" if unclear.",
+          "",
+          "When you call either tool, give a brief spoken confirmation (e.g. \"Saved.\", \"Reminder set for Friday.\") so the rep knows it worked.",
+          "Do not call tools unless the rep explicitly asked — don't save summaries or schedule things on your own initiative yet.",
         ].join("\n"),
-        tools: [saveNote],
+        tools: [saveNote, createFollowUpTask],
       });
 
       const session = new RealtimeSession(agent, {
@@ -238,7 +244,8 @@ export default function Home() {
 
         <p className="max-w-md text-center text-xs text-gray-400">
           Click &quot;Start talking&quot; and allow microphone access. Try:{" "}
-          <em>&quot;Save a note that Acme Corp is interested in annual prepay.&quot;</em>
+          <em>&quot;Save a note that Acme is interested in annual prepay&quot;</em> or{" "}
+          <em>&quot;Remind me to email Acme&apos;s CFO on Friday about pricing.&quot;</em>
         </p>
       </section>
 
