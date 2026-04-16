@@ -1,5 +1,6 @@
 import { tool } from "@openai/agents-realtime";
 import { z } from "zod";
+import { addTask } from "../store/taskStore";
 
 const CreateFollowUpTaskParams = z.object({
   customer: z
@@ -33,13 +34,26 @@ export const createFollowUpTask = tool({
     const taskId = `task_${Date.now().toString(36)}_${Math.random()
       .toString(36)
       .slice(2, 8)}`;
+    const now = new Date().toISOString();
+
+    const saved = addTask({
+      id: taskId,
+      customer: input.customer,
+      due_at: input.due_at,
+      channel: input.channel,
+      body: input.body,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
 
     console.log("[tool:create_follow_up_task] called", { taskId, input });
 
     return JSON.stringify({
       ok: true,
       taskId,
-      createdAt: new Date().toISOString(),
+      status: saved.status,
+      createdAt: saved.createdAt,
     });
   },
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useSyncExternalStore } from "react";
 import {
   RealtimeAgent,
   RealtimeSession,
@@ -8,6 +8,14 @@ import {
 } from "@openai/agents-realtime";
 import { saveNote } from "./lib/tools/saveNote";
 import { createFollowUpTask } from "./lib/tools/createFollowUpTask";
+import { updateFollowUpTask } from "./lib/tools/updateFollowUpTask";
+import { cancelFollowUpTask } from "./lib/tools/cancelFollowUpTask";
+import {
+  subscribeToTasks,
+  getTasksSnapshot,
+  clearAllTasks,
+  type FollowUpTask,
+} from "./lib/store/taskStore";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -27,7 +35,7 @@ import {
   type ToolPart,
 } from "@/components/ai-elements/tool";
 import { cn } from "@/lib/utils";
-import { Pencil, RotateCcw } from "lucide-react";
+import { Pencil, RotateCcw, CircleCheck, CircleX, Mail, Phone, Calendar, MessageSquare } from "lucide-react";
 
 type ToolCallStatus = "running" | "done" | "error";
 
@@ -99,6 +107,11 @@ export default function Home() {
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
+  const tasks = useSyncExternalStore(
+    subscribeToTasks,
+    getTasksSnapshot,
+    getTasksSnapshot
+  );
   const sessionRef = useRef<RealtimeSession | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -131,16 +144,25 @@ export default function Home() {
           "Keep your responses short and conversational.",
           "Greet the user warmly when they connect.",
           "",
-          "You have two tools available:",
+          "You have four tools available:",
           "",
           "1. `save_note` — use when the rep asks to capture, save, log, or record a note, takeaway, observation, or piece of information from the call.",
           "",
-          "2. `create_follow_up_task` — use when the rep asks to set a reminder, schedule a follow-up, or create a task for later (e.g. \"remind me to call Acme on Friday\", \"schedule a follow-up with the CFO next week\"). Always capture the customer, the when, and a short description. Infer the channel (email/phone/calendar/other) from context, or use \"other\" if unclear.",
+          "2. `create_follow_up_task` — use when the rep asks to set a NEW reminder, schedule a follow-up, or create a task for later (e.g. \"remind me to call Acme on Friday\", \"schedule a follow-up with the CFO next week\"). Always capture the customer, the when, and a short description. Infer the channel (email/phone/calendar/other) from context, or use \"other\" if unclear.",
           "",
-          "When you call either tool, give a brief spoken confirmation (e.g. \"Saved.\", \"Reminder set for Friday.\") so the rep knows it worked.",
-          "Do not call tools unless the rep explicitly asked — don't save summaries or schedule things on your own initiative yet.",
+          "3. `update_follow_up_task` — use when the rep asks to MODIFY a previously-created task (e.g. \"change that to Thursday\", \"make it a phone call instead\", \"update the Acme reminder\"). DO NOT call create_follow_up_task again when the rep is modifying — that would create a duplicate task. Provide the task_id from the original create result; for fields that should not change, pass \"unchanged\" (for channel) or null (for due_at and body).",
+          "",
+          "4. `cancel_follow_up_task` — use when the rep asks to CANCEL, DELETE, or REMOVE a previously-created task (e.g. \"scratch that\", \"cancel the Acme reminder\", \"never mind that task\"). Provide the task_id from the original create result.",
+          "",
+          "Rules for task lifecycle:",
+          "- Remember the task_id returned from each create_follow_up_task result — you will need it for updates and cancels.",
+          "- If the rep corrects themselves about a task within the same turn or shortly after, prefer update/cancel over create. Ask briefly for clarification only if you genuinely cannot tell which task they mean.",
+          "- Notes are immutable in this system; if the rep wants to revise a note, save a new one.",
+          "",
+          "When you call any tool, give a brief spoken confirmation (e.g. \"Saved.\", \"Reminder set for Friday.\", \"Updated to Thursday.\", \"Cancelled.\") so the rep knows it worked.",
+          "Do not call tools unless the rep explicitly asked — don't save summaries or schedule things on your own initiative.",
         ].join("\n"),
-        tools: [saveNote, createFollowUpTask],
+        tools: [saveNote, createFollowUpTask, updateFollowUpTask, cancelFollowUpTask],
       });
 
       const session = new RealtimeSession(agent, {
@@ -359,6 +381,33 @@ export default function Home() {
         </CardContent>
       </Card>
 
+      {tasks.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
+              Follow-up tasks
+            </CardTitle>
+            <CardAction>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearAllTasks}
+                className="text-muted-foreground"
+              >
+                Clear
+              </Button>
+            </CardAction>
+          </CardHeader>
+          <CardContent>
+            <ol className="flex flex-col gap-2">
+              {tasks.map((task) => (
+                <TaskRow key={task.id} task={task} />
+              ))}
+            </ol>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
@@ -392,6 +441,69 @@ export default function Home() {
         </CardContent>
       </Card>
     </main>
+  );
+}
+
+function TaskRow({ task }: { task: FollowUpTask }) {
+  const isCancelled = task.status === "cancelled";
+  const isUpdated = task.updatedAt !== task.createdAt;
+
+  const ChannelIcon =
+    task.channel === "email"
+      ? Mail
+      : task.channel === "phone"
+      ? Phone
+      : task.channel === "calendar"
+      ? Calendar
+      : MessageSquare;
+
+  return (
+    <li
+      className={cn(
+        "flex items-start gap-3 rounded-md border border-border/60 bg-card/50 px-3 py-2 text-sm",
+        isCancelled && "opacity-50"
+      )}
+    >
+      <div className="mt-0.5 flex h-5 w-5 items-center justify-center text-muted-foreground">
+        {isCancelled ? (
+          <CircleX className="h-4 w-4 text-destructive/70" />
+        ) : (
+          <CircleCheck className="h-4 w-4 text-emerald-500" />
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-2 font-medium",
+            isCancelled && "line-through"
+          )}
+        >
+          <span className="truncate">{task.customer}</span>
+          <span className="text-muted-foreground">·</span>
+          <span className="text-muted-foreground">{task.due_at}</span>
+          <ChannelIcon className="h-3 w-3 text-muted-foreground" aria-label={task.channel} />
+        </div>
+        <p
+          className={cn(
+            "mt-0.5 text-xs text-muted-foreground line-clamp-2",
+            isCancelled && "line-through"
+          )}
+        >
+          {task.body}
+        </p>
+      </div>
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        {isCancelled ? (
+          <Badge variant="outline" className="text-[10px] font-normal">
+            cancelled
+          </Badge>
+        ) : isUpdated ? (
+          <Badge variant="secondary" className="text-[10px] font-normal">
+            updated
+          </Badge>
+        ) : null}
+      </div>
+    </li>
   );
 }
 
