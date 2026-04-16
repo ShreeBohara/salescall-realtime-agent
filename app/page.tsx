@@ -1,7 +1,11 @@
 "use client";
 
-import { useState, useRef } from "react";
-import { RealtimeAgent, RealtimeSession } from "@openai/agents-realtime";
+import { useState, useRef, useEffect } from "react";
+import {
+  RealtimeAgent,
+  RealtimeSession,
+  type RealtimeItem,
+} from "@openai/agents-realtime";
 import { saveNote } from "./lib/tools/saveNote";
 
 type ToolCallStatus = "running" | "done" | "error";
@@ -17,6 +21,41 @@ type ToolCall = {
   startedAt: number;
   endedAt?: number;
 };
+
+type TranscriptMessage = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  status: "in_progress" | "completed" | "incomplete";
+};
+
+function historyToTranscript(history: RealtimeItem[]): TranscriptMessage[] {
+  const out: TranscriptMessage[] = [];
+  for (const item of history) {
+    if (item.type !== "message") continue;
+    if (item.role !== "user" && item.role !== "assistant") continue;
+
+    let text = "";
+    for (const chunk of item.content) {
+      if (chunk.type === "input_text" || chunk.type === "output_text") {
+        text += chunk.text;
+      } else if (
+        chunk.type === "input_audio" ||
+        chunk.type === "output_audio"
+      ) {
+        text += chunk.transcript ?? "";
+      }
+    }
+
+    out.push({
+      id: item.itemId,
+      role: item.role,
+      text,
+      status: item.status,
+    });
+  }
+  return out;
+}
 
 function safeParseJson(raw: string): { parsed: unknown; ok: boolean } {
   try {
@@ -39,7 +78,15 @@ export default function Home() {
   const [status, setStatus] = useState<"idle" | "connecting" | "connected">("idle");
   const [error, setError] = useState<string | null>(null);
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
+  const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const sessionRef = useRef<RealtimeSession | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (transcriptRef.current) {
+      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+    }
+  }, [transcript]);
 
   async function connect() {
     try {
@@ -117,6 +164,10 @@ export default function Home() {
         );
       });
 
+      session.on("history_updated", (history) => {
+        setTranscript(historyToTranscript(history));
+      });
+
       await session.connect({ apiKey: ephemeralKey });
       sessionRef.current = session;
       setStatus("connected");
@@ -137,6 +188,10 @@ export default function Home() {
 
   function clearToolCalls() {
     setToolCalls([]);
+  }
+
+  function clearTranscript() {
+    setTranscript([]);
   }
 
   return (
@@ -185,6 +240,41 @@ export default function Home() {
           Click &quot;Start talking&quot; and allow microphone access. Try:{" "}
           <em>&quot;Save a note that Acme Corp is interested in annual prepay.&quot;</em>
         </p>
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-600">
+            Transcript
+          </h2>
+          {transcript.length > 0 && (
+            <button
+              onClick={clearTranscript}
+              className="text-xs text-gray-400 hover:text-gray-600"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        <div
+          ref={transcriptRef}
+          className="max-h-80 min-h-32 overflow-y-auto rounded-lg border border-gray-200 bg-white p-4"
+        >
+          {transcript.length === 0 ? (
+            <div className="flex h-full min-h-24 items-center justify-center text-center text-sm text-gray-400">
+              {status === "connected"
+                ? "Listening\u2026 say something."
+                : "Start a call to see the live transcript."}
+            </div>
+          ) : (
+            <ol className="flex flex-col gap-2">
+              {transcript.map((m) => (
+                <TranscriptLine key={m.id} message={m} />
+              ))}
+            </ol>
+          )}
+        </div>
       </section>
 
       <section className="flex flex-col gap-3">
@@ -260,6 +350,30 @@ function ToolCallCard({ call }: { call: ToolCall }) {
           )}
         </div>
       </div>
+    </li>
+  );
+}
+
+function TranscriptLine({ message }: { message: TranscriptMessage }) {
+  const isUser = message.role === "user";
+  const isStreaming = message.status === "in_progress";
+  const label = isUser ? "You" : "Earshot";
+  const labelClass = isUser ? "text-gray-900" : "text-indigo-600";
+  const textClass = isStreaming ? "text-gray-400" : "text-gray-800";
+  const displayText =
+    message.text.trim().length > 0
+      ? message.text
+      : isStreaming
+      ? "\u2026"
+      : "";
+
+  return (
+    <li className="text-sm leading-relaxed">
+      <span className={`mr-2 font-semibold ${labelClass}`}>{label}:</span>
+      <span className={textClass}>{displayText}</span>
+      {isStreaming && (
+        <span className="ml-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400 align-middle" />
+      )}
     </li>
   );
 }
