@@ -7,6 +7,8 @@ import {
   type RealtimeItem,
 } from "@openai/agents-realtime";
 import { saveNote } from "./lib/tools/saveNote";
+import { updateNote } from "./lib/tools/updateNote";
+import { deleteNote } from "./lib/tools/deleteNote";
 import { createFollowUpTask } from "./lib/tools/createFollowUpTask";
 import { updateFollowUpTask } from "./lib/tools/updateFollowUpTask";
 import { cancelFollowUpTask } from "./lib/tools/cancelFollowUpTask";
@@ -16,6 +18,12 @@ import {
   clearAllTasks,
   type FollowUpTask,
 } from "./lib/store/taskStore";
+import {
+  subscribeToNotes,
+  getNotesSnapshot,
+  clearAllNotes,
+  type Note,
+} from "./lib/store/noteStore";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -35,7 +43,7 @@ import {
   type ToolPart,
 } from "@/components/ai-elements/tool";
 import { cn } from "@/lib/utils";
-import { Pencil, RotateCcw, CircleCheck, CircleX, Mail, Phone, Calendar, MessageSquare } from "lucide-react";
+import { Pencil, RotateCcw, CircleCheck, CircleX, Mail, Phone, Calendar, MessageSquare, StickyNote, Trash2 } from "lucide-react";
 
 type ToolCallStatus = "running" | "done" | "error";
 
@@ -112,6 +120,11 @@ export default function Home() {
     getTasksSnapshot,
     getTasksSnapshot
   );
+  const notes = useSyncExternalStore(
+    subscribeToNotes,
+    getNotesSnapshot,
+    getNotesSnapshot
+  );
   const sessionRef = useRef<RealtimeSession | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -144,25 +157,34 @@ export default function Home() {
           "Keep your responses short and conversational.",
           "Greet the user warmly when they connect.",
           "",
-          "You have four tools available:",
+          "You have six tools available, grouped into two lifecycles:",
           "",
+          "NOTES (save / update / delete)",
           "1. `save_note` — use when the rep asks to capture, save, log, or record a note, takeaway, observation, or piece of information from the call.",
+          "2. `update_note` — use when the rep REVISES a previously-saved note: corrections (\"actually the note should say X\"), clarifications, or ADDITIONS (\"also add that they mentioned competitor pricing\"). DO NOT call save_note again when the rep is revising — that would create a duplicate. When the rep is ADDING information, concatenate the existing body with the new thought and pass the FULL combined body, not just the addition. Provide the note_id from the original save result.",
+          "3. `delete_note` — use when the rep asks to scratch, delete, or discard a previously-saved note. Provide the note_id.",
           "",
-          "2. `create_follow_up_task` — use when the rep asks to set a NEW reminder, schedule a follow-up, or create a task for later (e.g. \"remind me to call Acme on Friday\", \"schedule a follow-up with the CFO next week\"). Always capture the customer, the when, and a short description. Infer the channel (email/phone/calendar/other) from context, or use \"other\" if unclear.",
+          "TASKS (create / update / cancel)",
+          "4. `create_follow_up_task` — use when the rep asks to set a NEW reminder, schedule a follow-up, or create a task for later (e.g. \"remind me to call Acme on Friday\"). Capture the customer, the when, and a short description. Infer the channel (email/phone/calendar/other) from context, or use \"other\" if unclear.",
+          "5. `update_follow_up_task` — use when the rep asks to MODIFY a previously-created task (e.g. \"change that to Thursday\", \"make it a phone call instead\"). DO NOT call create_follow_up_task again when the rep is modifying — that would create a duplicate. Provide the task_id; for fields that should not change, pass \"unchanged\" (for channel) or null (for due_at and body).",
+          "6. `cancel_follow_up_task` — use when the rep asks to CANCEL, DELETE, or REMOVE a previously-created task. Provide the task_id.",
           "",
-          "3. `update_follow_up_task` — use when the rep asks to MODIFY a previously-created task (e.g. \"change that to Thursday\", \"make it a phone call instead\", \"update the Acme reminder\"). DO NOT call create_follow_up_task again when the rep is modifying — that would create a duplicate task. Provide the task_id from the original create result; for fields that should not change, pass \"unchanged\" (for channel) or null (for due_at and body).",
+          "Rules for note and task lifecycle:",
+          "- Remember the note_id and task_id returned from each save/create result — you will need them for updates and cancels/deletes.",
+          "- If the rep corrects themselves or adds to something within the same turn or shortly after, prefer update/cancel/delete over creating a new one. Ask briefly for clarification only if you genuinely cannot tell which note or task they mean.",
+          "- Notes and tasks are two separate concepts. \"Note\" = a piece of information captured for later reference. \"Task\" = a specific thing to do at a specific time. Use your judgment about which fits the rep's intent.",
           "",
-          "4. `cancel_follow_up_task` — use when the rep asks to CANCEL, DELETE, or REMOVE a previously-created task (e.g. \"scratch that\", \"cancel the Acme reminder\", \"never mind that task\"). Provide the task_id from the original create result.",
-          "",
-          "Rules for task lifecycle:",
-          "- Remember the task_id returned from each create_follow_up_task result — you will need it for updates and cancels.",
-          "- If the rep corrects themselves about a task within the same turn or shortly after, prefer update/cancel over create. Ask briefly for clarification only if you genuinely cannot tell which task they mean.",
-          "- Notes are immutable in this system; if the rep wants to revise a note, save a new one.",
-          "",
-          "When you call any tool, give a brief spoken confirmation (e.g. \"Saved.\", \"Reminder set for Friday.\", \"Updated to Thursday.\", \"Cancelled.\") so the rep knows it worked.",
+          "When you call any tool, give a brief spoken confirmation (e.g. \"Saved.\", \"Updated the note.\", \"Reminder set for Friday.\", \"Cancelled.\", \"Got it, deleted.\") so the rep knows it worked.",
           "Do not call tools unless the rep explicitly asked — don't save summaries or schedule things on your own initiative.",
         ].join("\n"),
-        tools: [saveNote, createFollowUpTask, updateFollowUpTask, cancelFollowUpTask],
+        tools: [
+          saveNote,
+          updateNote,
+          deleteNote,
+          createFollowUpTask,
+          updateFollowUpTask,
+          cancelFollowUpTask,
+        ],
       });
 
       const session = new RealtimeSession(agent, {
@@ -408,6 +430,33 @@ export default function Home() {
         </Card>
       )}
 
+      {notes.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
+              Saved notes
+            </CardTitle>
+            <CardAction>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearAllNotes}
+                className="text-muted-foreground"
+              >
+                Clear
+              </Button>
+            </CardAction>
+          </CardHeader>
+          <CardContent>
+            <ol className="flex flex-col gap-2">
+              {notes.map((note) => (
+                <NoteRow key={note.id} note={note} />
+              ))}
+            </ol>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
@@ -496,6 +545,73 @@ function TaskRow({ task }: { task: FollowUpTask }) {
         {isCancelled ? (
           <Badge variant="outline" className="text-[10px] font-normal">
             cancelled
+          </Badge>
+        ) : isUpdated ? (
+          <Badge variant="secondary" className="text-[10px] font-normal">
+            updated
+          </Badge>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+function NoteRow({ note }: { note: Note }) {
+  const isDeleted = note.status === "deleted";
+  const isUpdated = note.updatedAt !== note.createdAt;
+
+  return (
+    <li
+      className={cn(
+        "flex items-start gap-3 rounded-md border border-border/60 bg-card/50 px-3 py-2 text-sm",
+        isDeleted && "opacity-50"
+      )}
+    >
+      <div className="mt-0.5 flex h-5 w-5 items-center justify-center text-muted-foreground">
+        {isDeleted ? (
+          <Trash2 className="h-4 w-4 text-destructive/70" />
+        ) : (
+          <StickyNote className="h-4 w-4 text-amber-400" />
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-2 font-medium",
+            isDeleted && "line-through"
+          )}
+        >
+          <span className="truncate">{note.customer}</span>
+        </div>
+        <p
+          className={cn(
+            "mt-0.5 text-xs text-muted-foreground line-clamp-3 whitespace-pre-wrap",
+            isDeleted && "line-through"
+          )}
+        >
+          {note.body}
+        </p>
+        {note.tags.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {note.tags.map((tag) => (
+              <Badge
+                key={tag}
+                variant="outline"
+                className={cn(
+                  "px-1.5 py-0 text-[10px] font-normal",
+                  isDeleted && "line-through"
+                )}
+              >
+                {tag}
+              </Badge>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        {isDeleted ? (
+          <Badge variant="outline" className="text-[10px] font-normal">
+            deleted
           </Badge>
         ) : isUpdated ? (
           <Badge variant="secondary" className="text-[10px] font-normal">

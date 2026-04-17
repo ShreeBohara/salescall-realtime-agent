@@ -1,5 +1,6 @@
 import { tool } from "@openai/agents-realtime";
 import { z } from "zod";
+import { addNote } from "../store/noteStore";
 
 const SaveNoteParams = z.object({
   customer: z
@@ -26,13 +27,25 @@ export const saveNote = tool({
     const noteId = `note_${Date.now().toString(36)}_${Math.random()
       .toString(36)
       .slice(2, 8)}`;
+    const now = new Date().toISOString();
+
+    const saved = addNote({
+      id: noteId,
+      customer: input.customer,
+      body: input.body,
+      tags: input.tags,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
 
     console.log("[tool:save_note] called", { noteId, input });
 
     return JSON.stringify({
       ok: true,
       noteId,
-      savedAt: new Date().toISOString(),
+      status: saved.status,
+      savedAt: saved.createdAt,
     });
   },
 });
