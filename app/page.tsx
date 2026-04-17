@@ -35,6 +35,14 @@ import {
 } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
+  Popover,
+  PopoverContent,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverDescription,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   Tool,
   ToolContent,
   ToolHeader,
@@ -43,7 +51,7 @@ import {
   type ToolPart,
 } from "@/components/ai-elements/tool";
 import { cn } from "@/lib/utils";
-import { Pencil, RotateCcw, CircleCheck, CircleX, Mail, Phone, Calendar, MessageSquare, StickyNote, Trash2 } from "lucide-react";
+import { Pencil, RotateCcw, CircleCheck, CircleX, Mail, Phone, Calendar, MessageSquare, StickyNote, Trash2, ArrowRight } from "lucide-react";
 
 type ToolCallStatus = "running" | "done" | "error";
 
@@ -57,6 +65,10 @@ type ToolCall = {
   parsedResult?: unknown;
   startedAt: number;
   endedAt?: number;
+  /** id of the user transcript line that triggered this tool (for divergence chip). */
+  sourceItemId?: string;
+  /** snapshot of the user transcript line text at tool-start time. */
+  sourceItemText?: string;
 };
 
 type TranscriptMessage = {
@@ -102,6 +114,38 @@ function safeParseJson(raw: string): { parsed: unknown; ok: boolean } {
   }
 }
 
+/**
+ * Detect "transcript-vs-tool-arg" divergence for a single tool call against
+ * its triggering user transcript line. This is the Atmas/Acme chip's reason
+ * to exist: voice transcription often mis-hears the customer name, but the
+ * tool captures the agent's inferred intent. When they disagree, surface it.
+ *
+ * Rule: if the tool call has a `customer` arg, check whether the (normalized)
+ * customer substring-matches the (normalized) transcript line in either
+ * direction. If neither direction matches, and the first word of the tool's
+ * customer (if >=3 chars) also isn't in the transcript, call it divergent.
+ */
+function hasCustomerDivergence(
+  toolArgs: unknown,
+  sourceText: string | undefined
+): string | null {
+  if (!sourceText) return null;
+  if (typeof toolArgs !== "object" || toolArgs === null) return null;
+  const args = toolArgs as { customer?: unknown };
+  if (typeof args.customer !== "string" || !args.customer.trim()) return null;
+
+  const toolCustomer = args.customer.toLowerCase().trim();
+  const src = sourceText.toLowerCase();
+
+  if (src.includes(toolCustomer)) return null;
+  if (toolCustomer.includes(src.trim())) return null;
+
+  const firstWord = toolCustomer.split(/\s+/)[0];
+  if (firstWord.length >= 3 && src.includes(firstWord)) return null;
+
+  return args.customer;
+}
+
 function toolStateFromStatus(status: ToolCallStatus): ToolPart["state"] {
   if (status === "done") return "output-available";
   if (status === "error") return "output-error";
@@ -127,6 +171,7 @@ export default function Home() {
   );
   const sessionRef = useRef<RealtimeSession | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const latestUserItemRef = useRef<{ id: string; text: string } | null>(null);
 
   useEffect(() => {
     const el = transcriptScrollRef.current;
@@ -161,18 +206,23 @@ export default function Home() {
           "",
           "NOTES (save / update / delete)",
           "1. `save_note` — use when the rep asks to capture, save, log, or record a note, takeaway, observation, or piece of information from the call.",
-          "2. `update_note` — use when the rep REVISES a previously-saved note: corrections (\"actually the note should say X\"), clarifications, or ADDITIONS (\"also add that they mentioned competitor pricing\"). DO NOT call save_note again when the rep is revising — that would create a duplicate. When the rep is ADDING information, concatenate the existing body with the new thought and pass the FULL combined body, not just the addition. Provide the note_id from the original save result. To leave a field unchanged: pass `null` for `body` or `tags`. IMPORTANT: `tags` is an array — never pass the string \"unchanged\" for tags; use `null` for skip or `[]` to clear.",
+          "2. `update_note` — use when the rep REVISES a previously-saved note: corrections (\"actually the note should say X\"), clarifications, ADDITIONS (\"also add that they mentioned competitor pricing\"), or RE-ATTRIBUTIONS (\"that note was about Atmas, not Acme\"). DO NOT call save_note again when the rep is revising — that would create a duplicate. When the rep is ADDING information, concatenate the existing body with the new thought and pass the FULL combined body, not just the addition. For RE-ATTRIBUTIONS, use the `new_customer` field with the corrected name (leave the existing `customer` field as the OLD customer for lookup). Provide the note_id from the original save result. To leave a field unchanged: pass `null` for `body`, `tags`, or `new_customer`. IMPORTANT: `tags` is an array — never pass the string \"unchanged\" for tags; use `null` for skip or `[]` to clear.",
           "3. `delete_note` — use when the rep asks to scratch, delete, or discard a previously-saved note. Provide the note_id.",
           "",
           "TASKS (create / update / cancel)",
           "4. `create_follow_up_task` — use when the rep asks to set a NEW reminder, schedule a follow-up, or create a task for later (e.g. \"remind me to call Acme on Friday\"). Capture the customer, the when, and a short description. Infer the channel (email/phone/calendar/other) from context, or use \"other\" if unclear. Pass `force: false` by default.",
-          "5. `update_follow_up_task` — use when the rep asks to MODIFY a previously-created task (e.g. \"change that to Thursday\", \"make it a phone call instead\"). DO NOT call create_follow_up_task again when the rep is modifying — that would create a duplicate. Provide the task_id; for fields that should not change, pass \"unchanged\" (for channel) or null (for due_at and body).",
+          "5. `update_follow_up_task` — use when the rep asks to MODIFY a previously-created task (e.g. \"change that to Thursday\", \"make it a phone call instead\", \"that task was for Atmas, not Acme\"). DO NOT call create_follow_up_task again when the rep is modifying — that would create a duplicate. For RE-ATTRIBUTIONS, use the `new_customer` field with the corrected name (leave the existing `customer` field as the OLD customer for lookup). Provide the task_id; for fields that should not change, pass \"unchanged\" (for channel) or null (for due_at, body, and new_customer).",
           "6. `cancel_follow_up_task` — use when the rep asks to CANCEL, DELETE, or REMOVE a previously-created task. Provide the task_id.",
           "",
           "Rules for note and task lifecycle:",
           "- Remember the note_id and task_id returned from each save/create result — you will need them for updates and cancels/deletes.",
           "- If the rep corrects themselves or adds to something within the same turn or shortly after, prefer update/cancel/delete over creating a new one. Ask briefly for clarification only if you genuinely cannot tell which note or task they mean.",
           "- Notes and tasks are two separate concepts. \"Note\" = a piece of information captured for later reference. \"Task\" = a specific thing to do at a specific time. Use your judgment about which fits the rep's intent.",
+          "",
+          "TRUST THE REP'S LITERAL WORDS FOR CUSTOMER NAMES — IMPORTANT:",
+          "Treat whatever the rep calls the customer as the truth by default. If they say \"Atmos\", the customer is \"Atmos\" — do NOT silently normalize to a similar-sounding name you saw earlier in the call. Separate customers with similar-sounding names are common in sales (Atmos vs Acme, Agnes vs Acme, Globex vs Gloplex). When in doubt, trust the literal words.",
+          "Only consolidate to a prior-mentioned customer name if the rep EXPLICITLY says so (\"that was Acme, I misspoke\", \"same Acme as before\"). If you are uncertain, ask a one-sentence clarifying question: \"Is this the Acme we were just talking about, or a different customer?\".",
+          "If the rep later corrects a customer name (\"that note was about Atmas, not Acme\"), use update_note or update_follow_up_task with the `new_customer` field to fix the record — never delete and re-save.",
           "",
           "DUPLICATE TASK HANDLING — IMPORTANT:",
           "If `create_follow_up_task` returns `{ ok: false, error: \"duplicate_likely\" }`, do NOT silently retry. The response includes `existingTaskId` and `existing: { customer, due_at, channel, body }`. Tell the rep out loud about the existing task (\"You already have a reminder to call Priya on Wednesday\") and ask what they want to do:",
@@ -209,7 +259,13 @@ export default function Home() {
         const callId =
           tc.type === "function_call" ? tc.callId : tc.id ?? `${tool.name}_${Date.now()}`;
 
-        console.log("[agent_tool_start]", { tool: tool.name, toolCall: tc });
+        const triggeringUserItem = latestUserItemRef.current;
+
+        console.log("[agent_tool_start]", {
+          tool: tool.name,
+          toolCall: tc,
+          triggeredBy: triggeringUserItem,
+        });
 
         setToolCalls((prev) => [
           ...prev,
@@ -220,6 +276,8 @@ export default function Home() {
             rawArgs,
             status: "running",
             startedAt: Date.now(),
+            sourceItemId: triggeringUserItem?.id,
+            sourceItemText: triggeringUserItem?.text,
           },
         ]);
       });
@@ -248,7 +306,16 @@ export default function Home() {
       });
 
       session.on("history_updated", (history) => {
-        setTranscript(historyToTranscript(history));
+        const next = historyToTranscript(history);
+        setTranscript(next);
+
+        for (let i = next.length - 1; i >= 0; i--) {
+          const m = next[i];
+          if (m.role === "user" && m.text.trim().length > 0) {
+            latestUserItemRef.current = { id: m.id, text: m.text };
+            break;
+          }
+        }
       });
 
       await session.connect({ apiKey: ephemeralKey });
@@ -393,18 +460,35 @@ export default function Home() {
               </div>
             ) : (
               <ol className="flex flex-col gap-2 pr-3">
-                {transcript.map((m) => (
-                  <TranscriptLine
-                    key={m.id}
-                    message={m}
-                    editedText={edits[m.id]}
-                    isEditing={editingId === m.id}
-                    onStartEdit={() => startEdit(m.id)}
-                    onSaveEdit={(newText) => saveEdit(m.id, m.text, newText)}
-                    onCancelEdit={cancelEdit}
-                    onUndoEdit={() => undoEdit(m.id)}
-                  />
-                ))}
+                {transcript.map((m) => {
+                  const effective = edits[m.id] ?? m.text;
+                  const divergences: string[] = [];
+                  if (m.role === "user") {
+                    for (const call of toolCalls) {
+                      if (call.sourceItemId !== m.id) continue;
+                      const divergent = hasCustomerDivergence(
+                        call.args,
+                        effective
+                      );
+                      if (divergent && !divergences.includes(divergent)) {
+                        divergences.push(divergent);
+                      }
+                    }
+                  }
+                  return (
+                    <TranscriptLine
+                      key={m.id}
+                      message={m}
+                      editedText={edits[m.id]}
+                      isEditing={editingId === m.id}
+                      divergences={divergences}
+                      onStartEdit={() => startEdit(m.id)}
+                      onSaveEdit={(newText) => saveEdit(m.id, m.text, newText)}
+                      onCancelEdit={cancelEdit}
+                      onUndoEdit={() => undoEdit(m.id)}
+                    />
+                  );
+                })}
               </ol>
             )}
           </ScrollArea>
@@ -690,6 +774,7 @@ function TranscriptLine({
   message,
   editedText,
   isEditing,
+  divergences,
   onStartEdit,
   onSaveEdit,
   onCancelEdit,
@@ -698,6 +783,7 @@ function TranscriptLine({
   message: TranscriptMessage;
   editedText?: string;
   isEditing: boolean;
+  divergences: string[];
   onStartEdit: () => void;
   onSaveEdit: (newText: string) => void;
   onCancelEdit: () => void;
@@ -769,6 +855,57 @@ function TranscriptLine({
             </button>
           </>
         )}
+        {divergences.map((toolCustomer) => (
+          <Popover key={toolCustomer}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                aria-label={`Transcript disagrees with tool arg "${toolCustomer}" — click for details`}
+                className="ml-2 inline-flex cursor-pointer items-center gap-1 rounded-md border border-amber-400/60 bg-amber-400/10 px-1.5 py-0 text-[10px] font-normal text-amber-200 hover:bg-amber-400/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/40"
+              >
+                <ArrowRight className="h-2.5 w-2.5" />
+                {toolCustomer}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-80 text-xs">
+              <PopoverHeader>
+                <PopoverTitle className="text-sm">
+                  Transcript &amp; tool don&apos;t match
+                </PopoverTitle>
+                <PopoverDescription>
+                  The tool captured customer as{" "}
+                  <span className="font-mono font-semibold text-amber-200">
+                    {toolCustomer}
+                  </span>
+                  , but this transcript line says something different.
+                </PopoverDescription>
+              </PopoverHeader>
+              <div className="flex flex-col gap-1.5 text-muted-foreground">
+                <div>
+                  <span className="font-semibold text-foreground">
+                    If the transcript was mis-heard
+                  </span>{" "}
+                  (tool got it right): click the pencil icon on this line and
+                  edit the text to match.
+                </div>
+                <div>
+                  <span className="font-semibold text-foreground">
+                    If the tool got it wrong
+                  </span>{" "}
+                  (transcript is right): say out loud{" "}
+                  <em>
+                    &ldquo;actually that was &lt;name&gt;, not {toolCustomer}
+                    &rdquo;
+                  </em>{" "}
+                  — the agent will fix the record.
+                </div>
+                <div className="pt-1 text-[10px] text-muted-foreground/70">
+                  Either way, the chip disappears when both sides agree.
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
+        ))}
       </div>
       {canEdit && !isEdited && (
         <button

@@ -32,14 +32,18 @@ the interface; the UI is deliberately minimal.
 | Capability | How it's surfaced |
 |---|---|
 | Ask questions about the call / customer | Free-form voice turn, Earshot replies in `marin` voice |
-| Capture a structured note | `save_note` tool → `{ customer, body, tags[] }` → card in Agent actions feed |
-| Create a follow-up task | `create_follow_up_task` tool → `{ customer, due_at, channel, body }` → card in Agent actions feed |
+| Capture a structured note + **revise / delete it later by voice** | `save_note` / `update_note` / `delete_note` — written to a shared in-browser `noteStore`, shown in the **Saved notes** panel with live status badges |
+| Create a follow-up task + **update / cancel it later by voice** | `create_follow_up_task` / `update_follow_up_task` / `cancel_follow_up_task` — written to `taskStore`, shown in the **Follow-up tasks** panel with strikethrough on cancel |
+| **Prevent duplicate tasks** | `create_follow_up_task` is schema-checked for near-duplicates (same customer + due + channel + body) — returns `duplicate_likely` to the agent, which asks the rep before taking action |
+| **Edit what the rep said** | Inline pencil icon on user transcript lines. Edits are local UI truth; tool args stay as the model captured them. "edited" badge + one-click undo |
+| **Surface transcript ↔ tool-arg divergence** | When a tool's `customer` arg doesn't match the transcript line it came from, an amber `→ <name>` chip appears inline. Editable in either direction (see [Demo edge case](#demo-edge-case)) |
 | See what was said | Live transcript strip, streams dim-to-solid as turns complete |
 | See what was _done_ | Agent actions feed — collapsible tool-call cards with args, result, elapsed ms |
 
-Both tool `execute` handlers are currently client-side stubs (they generate a
-fake `noteId` / `taskId` and return JSON). Swapping in a real backend is a
-single-file change per tool — see [Known limitations](#known-limitations--future-work).
+All six tool `execute` handlers run client-side and write to in-browser
+stores. Swapping each one for a real `/api/tools/*` route + database is a
+single-file change per tool — the Zod schemas stay the same. See
+[Known limitations](#known-limitations--future-work).
 
 ---
 
@@ -59,8 +63,11 @@ single-file change per tool — see [Known limitations](#known-limitations--futu
 │                   OpenAI Realtime API                                │
 │   model: gpt-realtime   ·   voice: marin   ·   transport: WebRTC     │
 │                                                                      │
-│   tool calls ──► save_note / create_follow_up_task                   │
-│                  (executed in the browser; result sent back)         │
+│   tool calls ──► 6 tools across 2 lifecycles:                        │
+│                    notes:  save / update / delete                    │
+│                    tasks:  create / update / cancel                  │
+│                  (executed in the browser against in-memory stores;  │
+│                   result sent back to the model)                     │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -189,33 +196,65 @@ That's it. No database, no Redis, no migrations.
 
 ## Demo edge case
 
-### The "Atmas / Acme" story
+### Trust, transcription, and the "Atmas / Acme" phenomenon
 
-Across three separate test sessions (local + prod), the live transcript
-rendered names differently than what the tool call captured:
+In seven independent test sessions the live transcript rendered a customer
+name differently than what the tool call captured:
 
 | What the transcript showed | What the tool arg stored |
 |---|---|
 | "Atmas CFO" | `customer: "Acme CFO"` |
 | "Akne" / "Agnes" | `customer: "Acme"` |
-| "TechNicorp" | `customer: "TechNicorp"` (consistent both sides) |
+| "Globelex" / "Gloplex" / "Globepex" | `customer: "Gloplex"` |
+| "Admin Campaign" | `customer: "Acme CFO"` |
+| "TechNicorp" | `customer: "TechNicorp"` _(no divergence)_ |
 
-That's not a bug — it's two different models doing two different jobs:
+That's not a bug — it's two different systems doing two different jobs:
 
-- **Transcription** (Whisper-class) is phoneme → text only. It picks the
-  statistically-likely English spelling of what it heard, with no knowledge of
-  whom you're talking about.
-- **The realtime reasoning model** (`gpt-realtime`) has the audio _and_ the
-  conversation context. It fills tool args semantically.
+- **Transcription** is phoneme → text. It picks the statistically-likely
+  English spelling of what it heard, with no knowledge of whom you're
+  talking about.
+- **`gpt-realtime`** has both the audio _and_ the running conversation.
+  When the rep says something that sounds like "Atmas" right after five
+  tool calls to "Acme", the reasoning model can decide they meant Acme.
+  When they say something that sounds like "Atmos" at the start of a
+  clean session, the reasoning model takes them at their word.
 
-**So the Agent Actions feed is the source of truth for mutations; the
-transcript is lossy human-readable narration of the same events.** That split
-is why the UI surfaces tool calls as their own feed with their own args, not
-as inline text inside the transcript.
+### The design principle: agent trusts the rep's literal words by default
 
-(In production: add a `resolve_entity` fuzzy-match against a real CRM between
-the tool call and the mutation — the transcript becomes a trust affordance
-with click-to-correct, not a source of record.)
+Building this, the obvious failure mode would be to have the agent always
+consolidate similar-sounding names to a recently-mentioned customer. That
+breaks real-world sales, where accounts with near-identical names are
+common (Atmos Energy, Acme Corp, and Atlas Inc can all be live
+simultaneously). The system prompt explicitly instructs the model to
+trust what the rep said unless the rep says otherwise. In testing, this
+holds: seven of seven sessions captured the rep's literal word as the
+customer; the divergences above only occurred when the conversation
+context _already_ anchored to a prior customer.
+
+### The divergence chip — a symmetric trust affordance
+
+When a tool call's `customer` arg doesn't substring-match the transcript
+line that triggered it, a small amber `→ <name>` chip appears inline on
+the transcript line. This happens in both failure modes:
+
+- **Transcription mis-heard.** ASR wrote "Atmas", the agent (correctly)
+  captured "Acme". Chip surfaces the disagreement. Rep clicks the pencil
+  icon on the transcript line, edits to match. Chip disappears.
+- **Agent over-normalized.** The rep meant Atmos-the-separate-company,
+  but the agent consolidated to Acme. Chip surfaces the disagreement.
+  Rep says out loud: _"that was actually Atmos, not Acme."_ The agent
+  calls `update_note` / `update_follow_up_task` with the new `new_customer`
+  field, fixing the record. Chip recomputes against the updated tool arg
+  and disappears.
+
+Same chip, bi-directional correction. Both the transcript and the tool
+args are editable by the right side of the system. The chip is neutral —
+it doesn't take a side on which is correct.
+
+> In production, add a `resolve_entity` fuzzy-match against a real CRM
+> before the mutation lands. The divergence chip becomes a click-to-
+> disambiguate affordance against actual customer records.
 
 ---
 
@@ -229,14 +268,15 @@ this repo):
 - [x] Next.js App Router + shadcn + Tailwind
 - [x] Real-time voice in/out via OpenAI Realtime API
 - [x] Voice flow: ask questions, capture notes, create follow-ups
-- [x] UI visualization of agent actions / tool calls (name, args, status, result)
+- [x] UI visualization of agent actions / tool calls (name, args, status, result, duplicate warnings)
 - [x] Transport choice explained ([WebRTC, see above](#1-webrtc-over-websocket))
+- [x] ≥1 real tool integration — **six wired** across two lifecycles (notes: save / update / delete, tasks: create / update / cancel)
 
-### Additional goals (brief asks for ≥2, we have three)
+### Additional goals (brief asks for ≥2, we have all four)
 
 - [x] Vercel AI Elements on top of shadcn (`<Tool>` primitive drives the action feed)
-- [x] Real-time transcription (streaming dim-to-solid text with pulse indicator)
-- [x] ≥1 real tool integration (two wired: `save_note`, `create_follow_up_task`)
+- [x] Real-time transcription with full trust & correction UI — streaming dim-to-solid text, **editable user lines with undo**, **transcript ↔ tool-arg divergence chip** that resolves bidirectionally
+- [x] Active state panels for both lifecycles — **Saved notes** and **Follow-up tasks** cards render live state with `updated` / `cancelled` / `deleted` badges
 - [ ] Full responsive polish — partial; readable on mobile, not yet thumb-tuned
 
 ### Deliverables
@@ -249,26 +289,40 @@ this repo):
 
 ## Known limitations & future work
 
-1. **Client-side tool execute.** Both tools are browser stubs that generate fake
-   IDs. First production step is a `/api/tools/*` route per tool (plus a real
-   data store) — the Zod schemas stay the same.
-2. **No `resolve_entity` / fuzzy customer match.** Today the tool accepts
-   whatever the model fills in. A real deployment would look up the customer in
-   the CRM before mutating. The Atmas → Acme story above is exactly the use
-   case.
-3. **Language drift mitigation is prompt-level.** `gpt-realtime` occasionally
-   greets in Spanish on the first turn. A single `"Always respond in
-   English…"` directive pins it. A more robust fix would be the realtime
-   API's language param when / if it's exposed.
-4. **Elapsed-time in tool cards is ~0 ms** because execute returns
-   synchronously from the client stubs. Will become realistic the moment we
-   move to server routes.
-5. **Mobile layout is readable but not thumb-optimized.** The big-round
+1. **Client-side tool execute with in-memory stores.** All six tools run in the
+   browser and write to module-level `Map`-backed stores (`taskStore`,
+   `noteStore`). Refresh clears state. First production step is a
+   `/api/tools/*` route per tool plus a real database — the Zod schemas stay
+   the same; `useSyncExternalStore` bindings in `page.tsx` just swap to
+   server-source hooks.
+2. **No `resolve_entity` / fuzzy customer match against a real CRM.** Today
+   the tools accept whatever the model fills in for `customer`. A real
+   deployment would look up the customer in the CRM before mutating — the
+   divergence chip would become a click-to-disambiguate affordance against
+   actual records.
+3. **No `list_*` tools.** When the rep asks _"what are my tasks?"_, the agent
+   answers from its conversation memory (observed working in testing). Proper
+   version: `list_follow_up_tasks` / `list_notes` so the store is the source
+   of truth for queries, not the model's window.
+4. **Transcript trust/correction is half-built.** We have editable user lines
+   (with undo), active-state panels with lifecycle badges, and the divergence
+   chip. Deliberate future scope: per-word confidence cues from the ASR, and
+   a click-to-jump link from each tool-call card to the triggering transcript
+   line.
+5. **Duplicate detection is tasks-only.** Notes are intentionally stackable —
+   two notes about the same customer are normal. If that turns out to be
+   wrong in practice, the same `findNearDuplicate*` pattern drops into
+   `noteStore` cleanly.
+6. **Language drift mitigation is prompt-level.** `gpt-realtime` occasionally
+   greets in Spanish on the first turn. A single _"Always respond in
+   English…"_ directive in the system prompt pins it. Cleaner fix would be
+   the Realtime API's language param when / if it's exposed.
+7. **Elapsed-time in tool cards is ~0 ms** because execute returns
+   synchronously from the client-side stubs. Will become realistic on the
+   first move to server routes.
+8. **Mobile layout is readable but not thumb-optimized.** The big-round
    start-talking button helps; below-the-fold scrolling on tool cards with
    wide JSON could use compact mode on small viewports.
-6. **One tool-call event sometimes double-fires under dev HMR.** Deduplicated
-   by `callId` in the reducer, so only one card renders. Haven't seen it in
-   prod.
 
 ---
 
@@ -276,16 +330,24 @@ this repo):
 
 ```text
 app/
-├── api/session/route.ts        # mints ek_... ephemeral token
-├── layout.tsx                  # forces dark mode, Geist fonts
-├── page.tsx                    # the entire voice UI (client component)
-└── lib/tools/
-    ├── saveNote.ts
-    └── createFollowUpTask.ts
+├── api/session/route.ts           # mints ek_... ephemeral token
+├── layout.tsx                     # forces dark mode, Geist fonts
+├── page.tsx                       # the entire voice UI (client component)
+└── lib/
+    ├── store/
+    │   ├── taskStore.ts           # module-level task store + cached snapshot
+    │   └── noteStore.ts           # module-level note store + cached snapshot
+    └── tools/
+        ├── saveNote.ts
+        ├── updateNote.ts
+        ├── deleteNote.ts
+        ├── createFollowUpTask.ts  # with near-duplicate detection
+        ├── updateFollowUpTask.ts
+        └── cancelFollowUpTask.ts
 components/
-├── ai-elements/                # Vercel AI Elements (tool.tsx, code-block.tsx)
-└── ui/                         # shadcn primitives
-lib/utils.ts                    # shadcn cn() helper
+├── ai-elements/                   # Vercel AI Elements (tool.tsx, code-block.tsx)
+└── ui/                            # shadcn primitives
+lib/utils.ts                       # shadcn cn() helper
 ```
 
 No `src/` directory — matches OpenAI's

@@ -16,7 +16,13 @@ const UpdateNoteParams = z.object({
   customer: z
     .string()
     .describe(
-      "The customer, company, or contact the note is about. Used as a disambiguator and as a fallback if note_id doesn't match an existing note."
+      "The CURRENT customer of the note — used as a disambiguator and as a fallback lookup if note_id doesn't match. This is NOT the field to use when changing who the note is about — use `new_customer` for that."
+    ),
+  new_customer: z
+    .string()
+    .nullable()
+    .describe(
+      "Use this field ONLY when the rep is correcting who the note is for (e.g. 'that note was supposed to be about Atmas, not Acme'). Pass the new customer name. Pass null if the customer should not change."
     ),
   body: z
     .string()
@@ -64,6 +70,9 @@ export const updateNote = tool({
     const patch: Partial<Note> = {};
     if (!isUnchangedString(input.body)) patch.body = input.body as string;
     if (input.tags !== null) patch.tags = input.tags;
+    if (!isUnchangedString(input.new_customer)) {
+      patch.customer = (input.new_customer as string).trim();
+    }
 
     if (Object.keys(patch).length === 0) {
       console.log("[tool:update_note] no changes", { input });
@@ -76,6 +85,7 @@ export const updateNote = tool({
     }
 
     const previous = {
+      customer: target.customer,
       body: target.body,
       tags: target.tags,
     };
@@ -95,6 +105,7 @@ export const updateNote = tool({
       changes: patch,
       updated: updated
         ? {
+            customer: updated.customer,
             body: updated.body,
             tags: updated.tags,
           }

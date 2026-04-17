@@ -16,7 +16,13 @@ const UpdateFollowUpTaskParams = z.object({
   customer: z
     .string()
     .describe(
-      "The customer, company, or contact the task is for. Used as a disambiguator and as a fallback if task_id doesn't match an existing task."
+      "The CURRENT customer of the task — used as a disambiguator and as a fallback lookup if task_id doesn't match. This is NOT the field to use when changing who the task is for — use `new_customer` for that."
+    ),
+  new_customer: z
+    .string()
+    .nullable()
+    .describe(
+      "Use this field ONLY when the rep is correcting who the task is for (e.g. 'that task was supposed to be for Atmas, not Acme'). Pass the new customer name. Pass null if the customer should not change."
     ),
   due_at: z
     .string()
@@ -70,6 +76,9 @@ export const updateFollowUpTask = tool({
     if (!isUnchanged(input.due_at)) patch.due_at = input.due_at as string;
     if (input.channel !== "unchanged") patch.channel = input.channel;
     if (!isUnchanged(input.body)) patch.body = input.body as string;
+    if (!isUnchanged(input.new_customer)) {
+      patch.customer = (input.new_customer as string).trim();
+    }
 
     if (Object.keys(patch).length === 0) {
       console.log("[tool:update_follow_up_task] no changes", { input });
@@ -82,6 +91,7 @@ export const updateFollowUpTask = tool({
     }
 
     const previous = {
+      customer: target.customer,
       due_at: target.due_at,
       channel: target.channel,
       body: target.body,
@@ -102,6 +112,7 @@ export const updateFollowUpTask = tool({
       changes: patch,
       updated: updated
         ? {
+            customer: updated.customer,
             due_at: updated.due_at,
             channel: updated.channel,
             body: updated.body,
