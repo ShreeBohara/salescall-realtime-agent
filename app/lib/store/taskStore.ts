@@ -90,6 +90,51 @@ export function findLatestActiveForCustomer(
   return best;
 }
 
+/**
+ * Normalize a string for duplicate detection.
+ * Lowercase + trim + collapse whitespace + strip trailing punctuation.
+ * Conservative on purpose — false positives (blocking a legit new task)
+ * are worse than false negatives here.
+ */
+function normalizeForDup(s: string): string {
+  return s
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/[.!?]+$/, "");
+}
+
+function customerLooseMatch(a: string, b: string): boolean {
+  const na = normalizeForDup(a);
+  const nb = normalizeForDup(b);
+  if (!na || !nb) return false;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+/**
+ * Find an existing active task that looks like a duplicate of the candidate.
+ * Match rule: customer (loose) + due_at (exact after normalize) +
+ * channel (exact) + body (exact after normalize). All four must match.
+ */
+export function findNearDuplicateTask(candidate: {
+  customer: string;
+  due_at: string;
+  channel: TaskChannel;
+  body: string;
+}): FollowUpTask | null {
+  const cDue = normalizeForDup(candidate.due_at);
+  const cBody = normalizeForDup(candidate.body);
+  for (const task of tasks.values()) {
+    if (task.status !== "active") continue;
+    if (!customerLooseMatch(task.customer, candidate.customer)) continue;
+    if (normalizeForDup(task.due_at) !== cDue) continue;
+    if (task.channel !== candidate.channel) continue;
+    if (normalizeForDup(task.body) !== cBody) continue;
+    return task;
+  }
+  return null;
+}
+
 export function getAllTasks(): readonly FollowUpTask[] {
   return cachedSnapshot;
 }
