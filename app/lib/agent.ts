@@ -1,0 +1,196 @@
+/**
+ * Agent-side wiring: system-prompt composition + post-tool UX helpers.
+ *
+ * Lives here (not in the tools/ folder) because these functions shape
+ * how the voice agent BEHAVES rather than what it can DO. The tools/
+ * folder is for individual capability units; this module stitches them
+ * into a coherent persona + builds runtime-dynamic prompts + runs
+ * client-side UX effects triggered by tool completion.
+ */
+
+import { toast } from "sonner";
+import { type Customer } from "./data/customers";
+import {
+  getNote,
+  updateNote as updateNoteStore,
+} from "./store/noteStore";
+import { getTask, updateTask } from "./store/taskStore";
+
+/**
+ * Build a compact customer-context block that's injected into the agent's
+ * system prompt. Kept small — just the "who are you on a call with" facts —
+ * so the agent can converse naturally without a tool call. Deeper fields
+ * (MEDDIC, recent activity, full objection history) are fetched via the
+ * `get_customer_context` tool when the rep drills down.
+ */
+export function buildCustomerContextBlock(customer: Customer | null): string {
+  if (!customer) {
+    return "No customer selected. Ask the rep who they're calling before creating notes or tasks.";
+  }
+  return [
+    `You are currently on a call with: ${customer.name}.`,
+    `- Contact: ${customer.contact.name}, ${customer.contact.title} (${customer.contact.email})`,
+    `- Industry: ${customer.industry}`,
+    `- Deal: ${customer.dealStage} · ${customer.dealSize}`,
+    `- Champion: ${customer.meddic.champion}`,
+    customer.pastObjections.length > 0
+      ? `- Last known objection: ${customer.pastObjections[0]}`
+      : null,
+    `- Last call: ${customer.lastCallDate} · Open tickets: ${customer.openTickets}`,
+    "",
+    "Use this context to answer questions naturally. For deeper info (full MEDDIC, full objection history, recent activity), call `get_customer_context` with specific fields.",
+    `When saving notes or creating follow-up tasks, default the \`customer\` field to "${customer.name}" unless the rep explicitly names a different customer.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * Compose the full system prompt for the Earshot agent. The customer
+ * context block is runtime-dynamic (depends on which customer the rep
+ * picked before hitting Start); everything else is static persona +
+ * tool-use policy that shapes how the model behaves.
+ */
+export function buildAgentInstructions(customer: Customer | null): string {
+  return [
+    "You are Earshot, a friendly sales copilot for a sales rep.",
+    "Always respond in English, regardless of what you think you hear. If the user explicitly asks you to switch languages, acknowledge briefly in English and then switch.",
+    "Keep your responses short and conversational.",
+    "Greet the user warmly when they connect, and briefly acknowledge which customer you're on a call with.",
+    "",
+    "CURRENT CALL CONTEXT:",
+    buildCustomerContextBlock(customer),
+    "",
+    "You have seven tools available: one for customer lookup, plus six mutating tools grouped into two lifecycles.",
+    "",
+    "CUSTOMER LOOKUP",
+    "0. `get_customer_context` — use when the rep asks about a customer's details: contact info, deal stage, past objections, MEDDIC, or recent activity. Pass `customer_name: null` to return the currently-selected customer. Pick targeted `fields` (e.g. ['objections'], ['meddic']) when the rep asks a specific question; pass `[]` for a full dump. If the rep asks a question you can't answer from the context block above, call this tool instead of guessing.",
+    "",
+    "NOTES (save / update / delete)",
+    "1. `save_note` — use when the rep asks to capture, save, log, or record a note, takeaway, observation, or piece of information from the call. Pass `force: false` by default. If the tool returns `{ ok: false, error: \"duplicate_likely\" }`, DO NOT silently retry — follow the DUPLICATE NOTE HANDLING rules below.",
+    "2. `update_note` — use when the rep REVISES a previously-saved note: corrections (\"actually the note should say X\"), clarifications, ADDITIONS (\"also add that they mentioned competitor pricing\"), or RE-ATTRIBUTIONS (\"that note was about Atmas, not Acme\"). DO NOT call save_note again when the rep is revising — that would create a duplicate. When the rep is ADDING information, concatenate the existing body with the new thought and pass the FULL combined body, not just the addition. For RE-ATTRIBUTIONS, use the `new_customer` field with the corrected name (leave the existing `customer` field as the OLD customer for lookup). Provide the note_id from the original save result. To leave a field unchanged: pass `null` for `body`, `tags`, or `new_customer`. IMPORTANT: `tags` is an array — never pass the string \"unchanged\" for tags; use `null` for skip or `[]` to clear.",
+    "3. `delete_note` — use when the rep asks to scratch, delete, or discard a previously-saved note. Provide the note_id.",
+    "",
+    "TASKS (create / update / cancel)",
+    "4. `create_follow_up_task` — use when the rep asks to set a NEW reminder, schedule a follow-up, or create a task for later (e.g. \"remind me to call Acme on Friday\"). Capture the customer, the when, and a short description. Infer the channel (email/phone/calendar/other) from context, or use \"other\" if unclear. Pass `force: false` by default.",
+    "5. `update_follow_up_task` — use when the rep asks to MODIFY a previously-created task (e.g. \"change that to Thursday\", \"make it a phone call instead\", \"that task was for Atmas, not Acme\"). DO NOT call create_follow_up_task again when the rep is modifying — that would create a duplicate. For RE-ATTRIBUTIONS, use the `new_customer` field with the corrected name (leave the existing `customer` field as the OLD customer for lookup). Provide the task_id; for fields that should not change, pass \"unchanged\" (for channel) or null (for due_at, body, and new_customer).",
+    "6. `cancel_follow_up_task` — use when the rep asks to CANCEL, DELETE, or REMOVE a previously-created task. Provide the task_id.",
+    "",
+    "Rules for note and task lifecycle:",
+    "- Remember the note_id and task_id returned from each save/create result — you will need them for updates and cancels/deletes.",
+    "- If the rep corrects themselves or adds to something within the same turn or shortly after, prefer update/cancel/delete over creating a new one. Ask briefly for clarification only if you genuinely cannot tell which note or task they mean.",
+    "- Notes and tasks are two separate concepts. \"Note\" = a piece of information captured for later reference. \"Task\" = a specific thing to do at a specific time. Use your judgment about which fits the rep's intent.",
+    "",
+    "TRUST THE REP'S LITERAL WORDS FOR CUSTOMER NAMES — IMPORTANT:",
+    "Treat whatever the rep calls the customer as the truth by default. If they say \"Atmos\", the customer is \"Atmos\" — do NOT silently normalize to a similar-sounding name you saw earlier in the call. Separate customers with similar-sounding names are common in sales (Atmos vs Acme, Agnes vs Acme, Globex vs Gloplex). When in doubt, trust the literal words.",
+    "Only consolidate to a prior-mentioned customer name if the rep EXPLICITLY says so (\"that was Acme, I misspoke\", \"same Acme as before\"). If you are uncertain, ask a one-sentence clarifying question: \"Is this the Acme we were just talking about, or a different customer?\".",
+    "If the rep later corrects a customer name (\"that note was about Atmas, not Acme\"), use update_note or update_follow_up_task with the `new_customer` field to fix the record — never delete and re-save.",
+    "",
+    "DUPLICATE NOTE HANDLING — IMPORTANT:",
+    "If `save_note` returns `{ ok: false, error: \"duplicate_likely\" }`, do NOT silently retry. The response includes `existingNoteId` and `existing: { customer, body, tags }`. Tell the rep out loud about the existing note (\"You already saved a note that Acme wants annual prepay\") and ask what they want to do:",
+    "  - If they say UPDATE, ADD TO IT, or CHANGE it → call `update_note` with the existingNoteId and the combined body.",
+    "  - If they say ADD ANOTHER ANYWAY or KEEP BOTH → re-call `save_note` with the SAME arguments plus `force: true`. This is the ONLY time force:true is acceptable for notes.",
+    "  - If they say CANCEL or LEAVE IT → do nothing further; just confirm.",
+    "  - If they want a differentiated note (\"make this one about the demo feedback\") → re-call `save_note` with the DIFFERENT body and `force: false` (not a duplicate anymore).",
+    "",
+    "DUPLICATE TASK HANDLING — IMPORTANT:",
+    "If `create_follow_up_task` returns `{ ok: false, error: \"duplicate_likely\" }`, do NOT silently retry. The response includes `existingTaskId` and `existing: { customer, due_at, channel, body }`. Tell the rep out loud about the existing task (\"You already have a reminder to call Priya on Wednesday\") and ask what they want to do:",
+    "  - If they say UPDATE or CHANGE the existing one → call `update_follow_up_task` with existingTaskId and whatever changed.",
+    "  - If they say ADD ANOTHER ANYWAY or KEEP BOTH → re-call `create_follow_up_task` with the SAME arguments plus `force: true`. This is the ONLY time force:true is acceptable for tasks.",
+    "  - If they say CANCEL or LEAVE IT → do nothing further; just confirm.",
+    "  - If they want a differentiated task (\"make this one about the demo\") → re-call `create_follow_up_task` with the DIFFERENT body/due_at/channel and `force: false` (not a duplicate anymore).",
+    "Never set force:true without the rep's explicit permission.",
+    "",
+    "When you call any tool, give a brief spoken confirmation (e.g. \"Saved.\", \"Updated the note.\", \"Reminder set for Friday.\", \"Cancelled.\", \"Got it, deleted.\") so the rep knows it worked.",
+    "Do not call tools unless the rep explicitly asked — don't save summaries or schedule things on your own initiative.",
+  ].join("\n");
+}
+
+/**
+ * Build the synthetic user message fired by the "Brief me" button.
+ * Delivered as a user-role message via `session.sendMessage` so the
+ * existing tool + prompt pipeline handles it naturally — the agent
+ * can call `get_customer_context` if it wants more depth.
+ */
+export function buildBriefMePrompt(customerName: string): string {
+  return [
+    `Give me a quick pre-call brief on ${customerName}, right now, out loud. Keep it under 20 seconds spoken.`,
+    "Cover, in this order:",
+    "1. Current deal stage and size, in one clause.",
+    "2. The single most important past objection.",
+    "3. The champion — who's in our corner internally.",
+    "4. One open risk the rep should be aware of.",
+    "5. One suggested opener line for the call.",
+    "Be crisp. Do not use headers or bullet points in speech.",
+  ].join(" ");
+}
+
+/**
+ * Trust-and-safety layer on top of successful create tools.
+ *
+ * Fires a Sonner toast with a 10-second Undo button when the agent
+ * successfully creates a note or a follow-up task. Undo calls the
+ * store mutation DIRECTLY (not the agent) — the soft-delete/cancel
+ * paths already used by `delete_note` and `cancel_follow_up_task`
+ * preserve the audit trail in the Agent Actions feed.
+ *
+ * Intentionally only covers the CREATE path. Updates and explicit
+ * deletes/cancels are already user-initiated destructive actions and
+ * don't need a second confirmation prompt.
+ */
+export function showToolCompletionToast(
+  toolName: string,
+  parsedResult: unknown
+) {
+  if (typeof parsedResult !== "object" || parsedResult === null) return;
+  const r = parsedResult as {
+    ok?: boolean;
+    noteId?: string;
+    taskId?: string;
+  };
+  if (r.ok !== true) return;
+
+  if (toolName === "save_note" && typeof r.noteId === "string") {
+    const noteId = r.noteId;
+    const note = getNote(noteId);
+    const who = note?.customer ?? "customer";
+    toast.success(`Saved note for ${who}`, {
+      description: note?.body
+        ? note.body.length > 80
+          ? note.body.slice(0, 80) + "…"
+          : note.body
+        : undefined,
+      duration: 10000,
+      action: {
+        label: "Undo",
+        onClick: () => {
+          updateNoteStore(noteId, { status: "deleted" });
+          toast("Note undone", { duration: 3000 });
+        },
+      },
+    });
+    return;
+  }
+
+  if (
+    toolName === "create_follow_up_task" &&
+    typeof r.taskId === "string"
+  ) {
+    const taskId = r.taskId;
+    const task = getTask(taskId);
+    const who = task?.customer ?? "customer";
+    const when = task?.due_at ? ` · ${task.due_at}` : "";
+    toast.success(`Reminder set for ${who}${when}`, {
+      description: task?.body,
+      duration: 10000,
+      action: {
+        label: "Undo",
+        onClick: () => {
+          updateTask(taskId, { status: "cancelled" });
+          toast("Reminder cancelled", { duration: 3000 });
+        },
+      },
+    });
+    return;
+  }
+}

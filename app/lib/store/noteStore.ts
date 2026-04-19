@@ -89,6 +89,72 @@ export function findLatestActiveNoteForCustomer(
   return best;
 }
 
+/**
+ * Normalize + fuzzy-similarity helpers for note duplicate detection.
+ * Shares shape with the task-store versions so behavior is predictable
+ * across both surfaces, but kept local to avoid a circular dep.
+ */
+function normalizeForDup(s: string): string {
+  return s.toLowerCase().trim().replace(/\s+/g, " ").replace(/[.!?,]+$/, "");
+}
+
+const NOTE_BODY_STOPWORDS = new Set([
+  "a", "an", "the", "to", "for", "of", "in", "on", "at", "by",
+  "this", "that", "these", "those", "and", "or", "about", "with",
+  "from", "make", "just", "please",
+]);
+
+function bodyTokenSet(s: string): Set<string> {
+  return new Set(
+    normalizeForDup(s)
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length > 0 && !NOTE_BODY_STOPWORDS.has(t))
+  );
+}
+
+function bodySimilar(a: string, b: string): boolean {
+  const na = normalizeForDup(a);
+  const nb = normalizeForDup(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  if (na.includes(nb) || nb.includes(na)) return true;
+
+  const ta = bodyTokenSet(a);
+  const tb = bodyTokenSet(b);
+  if (ta.size === 0 || tb.size === 0) return false;
+  let intersect = 0;
+  for (const t of ta) if (tb.has(t)) intersect++;
+  const union = ta.size + tb.size - intersect;
+  if (union === 0) return false;
+  return intersect / union >= 0.65;
+}
+
+function customerLooseMatch(a: string, b: string): boolean {
+  const na = normalizeForDup(a);
+  const nb = normalizeForDup(b);
+  if (!na || !nb) return false;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+/**
+ * Find an existing active note that looks like a duplicate of the
+ * candidate. Match rule: customer (loose) + body (similar — substring
+ * OR token-set Jaccard ≥ 0.65). Tags are ignored for dup detection —
+ * reps often re-tag, and the body is the semantic content.
+ */
+export function findNearDuplicateNote(candidate: {
+  customer: string;
+  body: string;
+}): Note | null {
+  for (const note of notes.values()) {
+    if (note.status !== "active") continue;
+    if (!customerLooseMatch(note.customer, candidate.customer)) continue;
+    if (!bodySimilar(note.body, candidate.body)) continue;
+    return note;
+  }
+  return null;
+}
+
 export function clearAllNotes() {
   notes.clear();
   notify();

@@ -101,7 +101,7 @@ function normalizeForDup(s: string): string {
     .toLowerCase()
     .trim()
     .replace(/\s+/g, " ")
-    .replace(/[.!?]+$/, "");
+    .replace(/[.!?,]+$/, "");
 }
 
 function customerLooseMatch(a: string, b: string): boolean {
@@ -112,9 +112,69 @@ function customerLooseMatch(a: string, b: string): boolean {
 }
 
 /**
+ * Loose match for due-at strings. "Friday" and "this Friday" refer to
+ * the same day in common rep speech, so we treat deictic prefixes as
+ * noise. Also handles "on Friday" / "next Friday" conservatively —
+ * "next Friday" is NOT considered the same as "Friday" (different
+ * intent), so we only strip `this/the/on/at` but keep `next`.
+ */
+function dueLooseMatch(a: string, b: string): boolean {
+  const strip = (s: string) =>
+    normalizeForDup(s).replace(/^(this|the|on|at|by|in)\s+/, "");
+  const na = strip(a);
+  const nb = strip(b);
+  if (!na || !nb) return false;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+/**
+ * Token-set similarity for task bodies. A stop-word list strips common
+ * filler (including due-at deictics like "this", "on") so two bodies
+ * that differ only by such words still match. Returns a Jaccard score
+ * in [0, 1] over the remaining tokens.
+ */
+const BODY_STOPWORDS = new Set([
+  "a", "an", "the", "to", "for", "of", "in", "on", "at", "by",
+  "this", "that", "these", "those", "next", "and", "or", "about",
+  "with", "from", "make", "just", "please",
+]);
+
+function bodyTokenSet(s: string): Set<string> {
+  return new Set(
+    normalizeForDup(s)
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length > 0 && !BODY_STOPWORDS.has(t))
+  );
+}
+
+function bodySimilar(a: string, b: string): boolean {
+  const na = normalizeForDup(a);
+  const nb = normalizeForDup(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  if (na.includes(nb) || nb.includes(na)) return true;
+
+  const ta = bodyTokenSet(a);
+  const tb = bodyTokenSet(b);
+  if (ta.size === 0 || tb.size === 0) return false;
+  let intersect = 0;
+  for (const t of ta) if (tb.has(t)) intersect++;
+  const union = ta.size + tb.size - intersect;
+  if (union === 0) return false;
+  const jaccard = intersect / union;
+  return jaccard >= 0.65;
+}
+
+/**
  * Find an existing active task that looks like a duplicate of the candidate.
- * Match rule: customer (loose) + due_at (exact after normalize) +
- * channel (exact) + body (exact after normalize). All four must match.
+ * Match rule: customer (loose) + due_at (loose) + channel (exact) +
+ * body (similar — substring OR token-set Jaccard ≥ 0.65).
+ *
+ * Fuzzier than strict-equality so small rephrasings don't slip through:
+ *   ("email Sarah about pricing", "Friday")
+ *   vs
+ *   ("email Sarah about pricing this Friday", "this Friday")
+ * are correctly treated as the same task.
  */
 export function findNearDuplicateTask(candidate: {
   customer: string;
@@ -122,14 +182,12 @@ export function findNearDuplicateTask(candidate: {
   channel: TaskChannel;
   body: string;
 }): FollowUpTask | null {
-  const cDue = normalizeForDup(candidate.due_at);
-  const cBody = normalizeForDup(candidate.body);
   for (const task of tasks.values()) {
     if (task.status !== "active") continue;
     if (!customerLooseMatch(task.customer, candidate.customer)) continue;
-    if (normalizeForDup(task.due_at) !== cDue) continue;
+    if (!dueLooseMatch(task.due_at, candidate.due_at)) continue;
     if (task.channel !== candidate.channel) continue;
-    if (normalizeForDup(task.body) !== cBody) continue;
+    if (!bodySimilar(task.body, candidate.body)) continue;
     return task;
   }
   return null;
