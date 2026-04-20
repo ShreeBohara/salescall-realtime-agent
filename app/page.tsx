@@ -58,6 +58,10 @@ import {
   historyToTranscript,
   safeParseJson,
 } from "./lib/helpers";
+import {
+  cancelPendingToolChime,
+  scheduleToolChime,
+} from "./lib/tool-chime";
 import type {
   CallSummary,
   ErrorKind,
@@ -401,6 +405,23 @@ export default function Home() {
         );
 
         showToolCompletionToast(tool.name, parsed);
+
+        // Schedule an audible fallback chime. If the agent DOES
+        // speak (audio_start handler below cancels this), the chime
+        // never fires. If the agent stays silent (observed when the
+        // model emits an empty response.done after tool calls), the
+        // chime plays ~600 ms later so the rep still hears SOMETHING
+        // confirming the action landed.
+        scheduleToolChime();
+      });
+
+      // Cancel any pending fallback chime as soon as real agent
+      // audio begins — if the agent IS speaking, we don't need the
+      // fallback, and a chime talking over the confirmation would be
+      // noise. (Intentionally separate from the mute listeners
+      // above so the chime timing is independent of mute policy.)
+      session.on("audio_start", () => {
+        cancelPendingToolChime();
       });
 
       // Auto-mute the mic while the agent is responding, so the
@@ -594,6 +615,10 @@ export default function Home() {
     userMutedRef.current = false;
     agentSpeakingRef.current = false;
     setMuted(false);
+
+    // Cancel any pending fallback chime so it can't fire after the
+    // session has ended.
+    cancelPendingToolChime();
 
     const customerAtEnd = getCustomerById(getSelectedCustomerId());
     const transcriptAtEnd = transcript
