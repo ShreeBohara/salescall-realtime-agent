@@ -106,13 +106,37 @@ export default function Home() {
   const [errorKind, setErrorKind] = useState<ErrorKind>("none");
   const [connectedAt, setConnectedAt] = useState<number | null>(null);
   /**
-   * Whether the mic is currently muted ("paused"). The RealtimeSession
-   * owns the underlying RTCRtpSender track; we mirror the state here
-   * so the UI can re-render the Pause/Resume toggle and the orb label
-   * without reaching into the session ref on every render. Reset to
-   * false on disconnect so a fresh call never starts pre-muted.
+   * USER-INTENT mute — true iff the rep hit the Pause button. Drives
+   * the Pause/Resume UI toggle and the orb label. Separate from the
+   * AUTO-mute that triggers while the agent is speaking (see
+   * `agentSpeaking` below); the actual SDK mute call is the OR of
+   * both signals. Reset to false on disconnect so a fresh call never
+   * starts pre-muted.
    */
   const [muted, setMuted] = useState(false);
+  /**
+   * AUTO-mute — true while the agent is actively generating audio.
+   *
+   * Why this exists: the SDK's WebRTC transport has a hardcoded
+   * behavior where `input_audio_buffer.speech_started` unconditionally
+   * fires `output_audio_buffer.clear`, which wipes the agent's
+   * in-flight audio on the client as soon as the rep starts their
+   * next utterance. Turn-detection tuning can't fix this — every
+   * quick back-to-back ask clips the agent's confirmation mid-word.
+   *
+   * The workaround is to temporarily mute the MIC while the agent is
+   * speaking, so the rep's overlapping utterance never triggers
+   * `speech_started` and the buffer never gets wiped. We toggle this
+   * from the session's `audio_start` / `audio_stopped` /
+   * `audio_interrupted` events; the mute flips back to whatever the
+   * rep's intent (`muted`) was the moment the agent finishes.
+   *
+   * Trade-off: during a confirmation ("Saved.", "Reminder set.") the
+   * rep literally cannot be heard by the model. For 3-5 word
+   * confirmations this is imperceptible; the manual Pause button is
+   * still the right tool for longer holds.
+   */
+  const [agentSpeaking, setAgentSpeaking] = useState(false);
 
   // Conversation data
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
@@ -201,6 +225,22 @@ export default function Home() {
       viewport.scrollTop = viewport.scrollHeight;
     }
   }, [transcript]);
+
+  // Sync the SDK's mute state to the OR of user-intent + auto-mute.
+  //
+  // The effect fires on every change to either `muted` (Pause
+  // toggle) or `agentSpeaking` (audio_start/stopped listeners). We
+  // only call `session.mute()` when the effective value actually
+  // differs from what the SDK already has, so we don't spam the
+  // transport with no-op updates.
+  useEffect(() => {
+    const session = sessionRef.current;
+    if (!session) return;
+    const desired = muted || agentSpeaking;
+    if (session.muted !== desired) {
+      session.mute(desired);
+    }
+  }, [muted, agentSpeaking]);
 
   // Sync status to body[data-status] so the ambient halo intensity animates.
   useEffect(() => {
@@ -368,6 +408,23 @@ export default function Home() {
         showToolCompletionToast(tool.name, parsed);
       });
 
+      // Auto-mute the mic while the agent is generating audio.
+      //
+      // See the `agentSpeaking` useState above for the full rationale.
+      // Short version: the SDK wipes the agent's audio buffer the
+      // moment `speech_started` fires on the input side, so any quick
+      // follow-up ask cuts off the previous confirmation. Muting the
+      // mic during agent speech prevents `speech_started` from ever
+      // firing and the buffer survives.
+      //
+      // `audio_interrupted` fires when the SDK's own interrupt path
+      // runs (ideally rare once auto-mute is in place, but we still
+      // unflag on it defensively — if the agent was interrupted,
+      // it's no longer speaking).
+      session.on("audio_start", () => setAgentSpeaking(true));
+      session.on("audio_stopped", () => setAgentSpeaking(false));
+      session.on("audio_interrupted", () => setAgentSpeaking(false));
+
       // Debug telemetry for turn-detection bugs.
       //
       // When a user ask goes silent (no tool call, no confirmation,
@@ -511,10 +568,12 @@ export default function Home() {
     const startedAtSnapshot = connectedAt;
     setStatus("idle");
     setConnectedAt(null);
-    // Clear the paused flag so the next call starts unmuted. Without
-    // this, a rep who ends a call while paused would find their mic
-    // silently muted on the next `Start talking`.
+    // Clear both mute flags so the next call starts unmuted. Without
+    // this, a rep who ends a call while paused (or while the agent
+    // was mid-response) would find their mic silently muted on the
+    // next `Start talking`.
     setMuted(false);
+    setAgentSpeaking(false);
 
     const customerAtEnd = getCustomerById(getSelectedCustomerId());
     const transcriptAtEnd = transcript
@@ -638,19 +697,14 @@ export default function Home() {
   }
 
   /**
-   * Toggle the "pause" state on a live call.
+   * Toggle the user-intent pause state on a live call.
    *
-   * Pause semantics here = mic-side silence: the RealtimeSession's
-   * WebRTC transport disables its RTP sender track, so audio stops
-   * flowing to OpenAI until we unmute. The session itself stays
-   * connected (bill keeps running, but conversation state is
-   * preserved — resuming doesn't cost a reconnect).
-   *
-   * On pause we ALSO call `session.interrupt()`. Rationale: if the
-   * rep hit Pause mid-agent-response, the expectation is "go quiet
-   * NOW" — letting the agent finish a long sentence defeats the
-   * purpose. Interrupt cancels any in-flight response server-side
-   * and truncates what's already been buffered for playback.
+   * Pause semantics here = mic-side silence: the auto-mute effect
+   * above translates user intent + agent-speaking into the actual
+   * `session.mute()` call, so this handler just flips the intent
+   * flag. If the rep hits Pause mid-agent-response, we also call
+   * `session.interrupt()` so the agent stops talking immediately —
+   * same UX contract as before (a manual pause means "silence now").
    *
    * No-op when the session isn't connected — the button is disabled
    * in those states, but a double-click race could still land here.
@@ -664,7 +718,6 @@ export default function Home() {
     if (nextMuted) {
       session.interrupt();
     }
-    session.mute(nextMuted);
     setMuted(nextMuted);
   }
 
