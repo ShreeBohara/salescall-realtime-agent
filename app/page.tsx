@@ -86,7 +86,6 @@ import { CallLogView } from "@/components/earshot/call-log-view";
 import { RepOnboarding } from "@/components/earshot/rep-onboarding";
 import { PreAuthShell } from "@/components/earshot/pre-auth-shell";
 import { OrbCallMeta } from "@/components/earshot/orb-call-meta";
-import { CoachCard } from "@/components/earshot/coach-card";
 import { Pause, PhoneOff, Play, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -864,9 +863,14 @@ export default function Home() {
               {/* Two-column hero (orb+actions | customer brief) stays
                   mounted across idle/connecting/connected so the rep
                   always has CRM context while talking. The transcript
-                  below still gets the full row width. */}
-              <div className="flex flex-col gap-8 md:flex-row md:items-start md:gap-12 lg:gap-16">
-                <div className="flex flex-col items-center gap-4 md:w-[320px] md:shrink-0">
+                  below still gets the full row width.
+                  `md:items-stretch` (default) lets the orb column
+                  match the brief column's height so we can vertically
+                  center the orb cluster — the previous `items-start`
+                  left a hard block of whitespace below the buttons
+                  whenever the brief ran long. */}
+              <div className="flex flex-col gap-8 md:flex-row md:gap-12 lg:gap-16">
+                <div className="flex flex-col items-center justify-center gap-4 md:w-[320px] md:shrink-0">
                   <div className="earshot-stagger-orb flex flex-col items-center gap-2">
                     <VoiceOrb
                       phase={orbPhase}
@@ -1004,14 +1008,6 @@ export default function Home() {
                       Brief me
                     </Button>
                   </div>
-
-                  {/* Pre-call playbook — only renders before a call
-                      connects. Once we're live the transcript takes
-                      over the column and a static coach card would
-                      just compete for attention. */}
-                  {status === "idle" && (
-                    <CoachCard customer={selectedCustomer} />
-                  )}
                 </div>
 
                 <div className="w-full min-w-0 md:flex-1">
