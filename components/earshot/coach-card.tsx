@@ -159,7 +159,7 @@ const PULSE_TONE: Record<
     dot: "bg-amber-400",
     ring: "shadow-[0_0_0_3px_rgba(251,191,36,0.20)]",
     text: "text-amber-300/90",
-    word: "cooling",
+    word: "cool",
   },
   cold: {
     dot: "bg-destructive",
@@ -250,11 +250,11 @@ export function CoachCard({ customer }: { customer: Customer | null }) {
           />
           <span
             className={cn(
-              "font-mono text-[9.5px] uppercase tracking-[0.22em]",
+              "font-mono text-[9.5px] whitespace-nowrap uppercase tracking-[0.18em]",
               tone.text
             )}
           >
-            {days == null ? "no contact" : `${days}d · ${tone.word}`}
+            {days == null ? "no contact" : `${days}d ${tone.word}`}
           </span>
         </div>
       </header>
