@@ -1,6 +1,7 @@
 import { tool } from "@openai/agents-realtime";
 import { z } from "zod";
 import { addTask, findNearDuplicateTask } from "../store/taskStore";
+import { getCurrentRepSnapshot } from "../store/repStore";
 
 const CreateFollowUpTaskParams = z.object({
   customer: z
@@ -68,6 +69,12 @@ export const createFollowUpTask = tool({
       .slice(2, 8)}`;
     const now = new Date().toISOString();
 
+    // Silent authorship stamp. See saveNote.ts for the full reasoning;
+    // short version: we record who created this task so a future per-
+    // rep filter has the data ready, but we don't surface the name in
+    // the ledger UI today to keep rows visually tight.
+    const authoringRep = getCurrentRepSnapshot();
+
     const saved = addTask({
       id: taskId,
       customer: input.customer,
@@ -77,6 +84,7 @@ export const createFollowUpTask = tool({
       status: "active",
       createdAt: now,
       updatedAt: now,
+      createdBy: authoringRep?.name,
     });
 
     console.log("[tool:create_follow_up_task] called", {

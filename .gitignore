@@ -47,6 +47,7 @@ Docs/
 
 # local cross-session agent context (private, not for public repo)
 .context/
+.claude/
 
 # IDE / editor
 .idea/

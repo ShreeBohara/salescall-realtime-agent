@@ -1,6 +1,7 @@
 import { tool } from "@openai/agents-realtime";
 import { z } from "zod";
 import { addNote, findNearDuplicateNote } from "../store/noteStore";
+import { getCurrentRepSnapshot } from "../store/repStore";
 
 const SaveNoteParams = z.object({
   customer: z
@@ -58,6 +59,15 @@ export const saveNote = tool({
       .slice(2, 8)}`;
     const now = new Date().toISOString();
 
+    // Silent authorship stamp — reads the currently signed-in rep
+    // from the module-level store at execute time. Undefined when
+    // nobody is signed in (onboarding hasn't completed yet), which
+    // the UI treats as "unattributed". We intentionally do NOT
+    // surface the author in the note body or the ledger row today;
+    // the field is here so a future "Shree's notes" filter or audit
+    // view can light up without a data migration.
+    const authoringRep = getCurrentRepSnapshot();
+
     const saved = addNote({
       id: noteId,
       customer: input.customer,
@@ -66,6 +76,7 @@ export const saveNote = tool({
       status: "active",
       createdAt: now,
       updatedAt: now,
+      createdBy: authoringRep?.name,
     });
 
     console.log("[tool:save_note] called", {

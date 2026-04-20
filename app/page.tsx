@@ -30,6 +30,23 @@ import {
   setSelectedCustomerId,
   subscribeToSelectedCustomer,
 } from "./lib/store/customerStore";
+import {
+  addCallToHistory,
+  clearCallHistory,
+  getCallHistorySnapshot,
+  getServerCallHistorySnapshot,
+  initClientCallHistory,
+  subscribeToCallHistory,
+  type CallRecord,
+} from "./lib/store/callHistoryStore";
+import {
+  clearCurrentRep,
+  getCurrentRepSnapshot,
+  getServerCurrentRepSnapshot,
+  initClientRep,
+  setCurrentRep,
+  subscribeToCurrentRep,
+} from "./lib/store/repStore";
 import { getCustomerById } from "./lib/data/customers";
 import {
   buildAgentInstructions,
@@ -37,7 +54,6 @@ import {
   showToolCompletionToast,
 } from "./lib/agent";
 import {
-  formatSecondsCountdown,
   hasCustomerDivergence,
   historyToTranscript,
   safeParseJson,
@@ -57,23 +73,21 @@ import { useMicAmplitude } from "./hooks/use-mic-amplitude";
 import { useSessionCap } from "./hooks/use-session-cap";
 
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { VoiceOrb, type VoiceOrbPhase } from "@/components/voice-orb";
 import { ConsentDialog } from "@/components/earshot/consent-dialog";
-import { CustomerPickerCard } from "@/components/earshot/customer-picker-card";
-import { NoteRow } from "@/components/earshot/note-row";
 import { PostCallSummaryCard } from "@/components/earshot/post-call-summary-card";
-import { StatusBadge } from "@/components/earshot/status-badge";
-import { TaskRow } from "@/components/earshot/task-row";
-import { ToolCallCard } from "@/components/earshot/tool-call-card";
 import { TranscriptLine } from "@/components/earshot/transcript-line";
+import { TopRail } from "@/components/earshot/top-rail";
+import { BottomRail } from "@/components/earshot/bottom-rail";
+import { LedgerPanel } from "@/components/earshot/ledger-panel";
+import { InlineToolCallRow } from "@/components/earshot/inline-tool-call-row";
+import { PreCallBriefing } from "@/components/earshot/pre-call-briefing";
+import { CallLogView } from "@/components/earshot/call-log-view";
+import { RepOnboarding } from "@/components/earshot/rep-onboarding";
+import { PreAuthShell } from "@/components/earshot/pre-auth-shell";
+import { Sparkles, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 /**
  * Voice page orchestration root.
@@ -99,6 +113,17 @@ export default function Home() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [summary, setSummary] = useState<SummaryState>({ phase: "idle" });
 
+  /**
+   * Which top-level stage is showing:
+   *   home → orb/transcript/pre-call-briefing/post-call-summary
+   *   log  → full-width call-log table (+ inline summary detail when
+   *          a row is selected). Reached via the top-rail "Call log"
+   *          nav button; left via its in-stage "Back to home".
+   * Calls can only be started from home, so we don't worry about this
+   * being "log" while a session is connecting/connected.
+   */
+  const [stageView, setStageView] = useState<"home" | "log">("home");
+
   // Store-backed state (module-level shared)
   const tasks = useSyncExternalStore(
     subscribeToTasks,
@@ -116,6 +141,32 @@ export default function Home() {
     getSelectedCustomerId
   );
   const selectedCustomer = getCustomerById(selectedCustomerId);
+  const callHistory = useSyncExternalStore(
+    subscribeToCallHistory,
+    getCallHistorySnapshot,
+    getServerCallHistorySnapshot
+  );
+  const currentRep = useSyncExternalStore(
+    subscribeToCurrentRep,
+    getCurrentRepSnapshot,
+    getServerCurrentRepSnapshot
+  );
+
+  // We need to distinguish "rep is actually null" (user is mid-
+  // onboarding or just signed out) from "we haven't hydrated yet".
+  // Without this flag, the onboarding modal would flash on every
+  // reload for the split second between mount and localStorage read.
+  const [clientReady, setClientReady] = useState(false);
+
+  // Swap the empty SSR snapshots for the real localStorage-backed
+  // values once, after the initial hydration pass. Running this in
+  // an effect (rather than at module load) keeps server and first
+  // client renders identical and avoids React hydration mismatches.
+  useEffect(() => {
+    initClientCallHistory();
+    initClientRep();
+    setClientReady(true);
+  }, []);
 
   // Hooks — side effects + subsystem state
   const { open: consentOpen, accept: acceptConsent } = useConsent();
@@ -142,6 +193,12 @@ export default function Home() {
       viewport.scrollTop = viewport.scrollHeight;
     }
   }, [transcript]);
+
+  // Sync status to body[data-status] so the ambient halo intensity animates.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.body.dataset.status = status;
+  }, [status]);
 
   /**
    * Derived view state:
@@ -192,9 +249,19 @@ export default function Home() {
       const ephemeralKey = tokenData.value;
 
       const customerAtConnectTime = getCustomerById(getSelectedCustomerId());
+      // Snapshot the rep at connect time (same pattern as customer)
+      // so re-renders during the call don't retroactively rewrite
+      // the agent's system prompt. If the rep signs out mid-call,
+      // the agent stays addressed to the original identity — which
+      // matches the "sign-out is locked during a live call" rule
+      // enforced by the profile chip.
+      const repAtConnectTime = getCurrentRepSnapshot();
       const agent = new RealtimeAgent({
         name: "Earshot",
-        instructions: buildAgentInstructions(customerAtConnectTime),
+        instructions: buildAgentInstructions(
+          customerAtConnectTime,
+          repAtConnectTime
+        ),
         tools: [
           getCustomerContext,
           saveNote,
@@ -304,6 +371,33 @@ export default function Home() {
       setConnectedAt(Date.now());
       setStatus("connected");
 
+      // Tighten the server VAD silence window. Default is ~500 ms; 350
+      // ms makes end-of-turn detection noticeably snappier without
+      // clipping slow speakers. Below ~300 ms starts cutting off reps
+      // mid-thought, so don't lower further without real-call testing.
+      // Fires a `session.update` event — the server merges it with the
+      // initial config the SDK sent during `connect()`.
+      try {
+        transport.updateSessionConfig({
+          audio: {
+            input: {
+              turnDetection: {
+                type: "server_vad",
+                silenceDurationMs: 350,
+                prefixPaddingMs: 200,
+                threshold: 0.5,
+                createResponse: true,
+              },
+            },
+          },
+        });
+      } catch (err) {
+        console.warn(
+          "[session] turn-detection tuning failed; falling back to server default",
+          err
+        );
+      }
+
       // Trigger the greeting turn. Without this, gpt-realtime stays
       // silent until the rep speaks first.
       transport.requestResponse?.();
@@ -334,6 +428,7 @@ export default function Home() {
       sessionRef.current.close();
       sessionRef.current = null;
     }
+    const startedAtSnapshot = connectedAt;
     setStatus("idle");
     setConnectedAt(null);
 
@@ -378,10 +473,13 @@ export default function Home() {
       toolCalls: toolCallsAtEnd,
     };
 
-    requestSummary(payload);
+    requestSummary(payload, startedAtSnapshot);
   }
 
-  async function requestSummary(payload: SummarizeRequestPayload) {
+  async function requestSummary(
+    payload: SummarizeRequestPayload,
+    startedAt: number | null = null
+  ) {
     setSummary({
       phase: "loading",
       startedAt: Date.now(),
@@ -415,11 +513,22 @@ export default function Home() {
         return;
       }
 
+      const endedAt = Date.now();
       setSummary({
         phase: "ready",
         summary: data.summary,
         forCustomer: payload.customer?.name ?? null,
-        endedAt: Date.now(),
+        endedAt,
+      });
+      addCallToHistory({
+        id:
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `call_${endedAt}`,
+        endedAt,
+        startedAt,
+        forCustomer: payload.customer?.name ?? null,
+        summary: data.summary,
       });
     } catch (err) {
       console.error("[requestSummary] failed", err);
@@ -446,6 +555,15 @@ export default function Home() {
 
   function dismissSummary() {
     setSummary({ phase: "idle" });
+  }
+
+  function restoreSummaryFromHistory(record: CallRecord) {
+    setSummary({
+      phase: "ready",
+      summary: record.summary,
+      forCustomer: record.forCustomer,
+      endedAt: record.endedAt,
+    });
   }
 
   function clearToolCalls() {
@@ -488,288 +606,442 @@ export default function Home() {
     });
   }
 
+  // ---- Feed composition -------------------------------------------
+  //
+  // Interleave tool-call chips into the transcript by their
+  // `sourceItemId` link (established when the tool started — it points
+  // at the user message that triggered it). This avoids timestamp math
+  // across streaming messages. Orphan calls (no source) fall to the
+  // bottom. The same `toolCalls[]` array still feeds the Actions tab in
+  // the ledger — two views, one source of truth.
+  type FeedEntry =
+    | { kind: "message"; message: TranscriptMessage }
+    | { kind: "tool"; call: ToolCall };
+
+  const callsBySourceId = new Map<string, ToolCall[]>();
+  const orphanCalls: ToolCall[] = [];
+  for (const call of toolCalls) {
+    if (call.sourceItemId) {
+      const arr = callsBySourceId.get(call.sourceItemId) ?? [];
+      arr.push(call);
+      callsBySourceId.set(call.sourceItemId, arr);
+    } else {
+      orphanCalls.push(call);
+    }
+  }
+  const mergedFeed: FeedEntry[] = [];
+  for (const m of transcript) {
+    mergedFeed.push({ kind: "message", message: m });
+    const linked = callsBySourceId.get(m.id);
+    if (linked) {
+      for (const call of linked) {
+        mergedFeed.push({ kind: "tool", call });
+      }
+    }
+  }
+  for (const call of orphanCalls) {
+    mergedFeed.push({ kind: "tool", call });
+  }
+
+  const showSummaryStage = summary.phase !== "idle";
+
+  /**
+   * Latest call *with the currently selected customer*. The pre-call
+   * briefing shows a recap keyed off this — not the globally-most-
+   * recent call, because otherwise picking "Initech" still shows the
+   * Atmos headline on the right, which is misleading.
+   */
+  const latestCallForSelected =
+    selectedCustomer == null
+      ? null
+      : callHistory.find((r) => r.forCustomer === selectedCustomer.name) ??
+        null;
+
+  // Switching to/from the log view. When leaving the log, we also
+  // dismiss any lingering summary so "Back to home" reliably lands on
+  // the idle hero (and not the post-call summary the user might have
+  // had open inside the log as a detail).
+  function openCallLog() {
+    setStageView("log");
+  }
+  function closeCallLog() {
+    setSummary({ phase: "idle" });
+    setStageView("home");
+  }
+  function toggleCallLog() {
+    if (stageView === "log") {
+      closeCallLog();
+    } else {
+      openCallLog();
+    }
+  }
+
   // ---- Render ----------------------------------------------------
 
-  return (
-    <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-5 p-4 sm:gap-6 sm:p-8">
-      <header className="flex flex-col items-center gap-1.5 pt-2 text-center sm:gap-2 sm:pt-6">
-        <h1 className="font-heading text-3xl font-semibold tracking-tight sm:text-4xl">
-          Earshot
-        </h1>
-        <p className="text-xs text-muted-foreground sm:text-sm">
-          Voice-first sales copilot
-        </p>
-      </header>
+  // Pre-auth gate. Before a rep signs in we render a clean splash
+  // instead of the full dashboard — no customer brief, no call log,
+  // no captured panel. Two reasons:
+  //   1. Product narrative: Earshot is "your personal agent", so it
+  //      shouldn't show someone else's CRM data before we know who
+  //      you are. The dashboard content should arrive AFTER sign-in,
+  //      the same way a real SaaS loads your own workspace on login.
+  //   2. Layout: a full dashboard behind the modal made the page tall
+  //      enough that the viewport-centered Radix dialog ended up below
+  //      the fold on short windows. A non-scrolling splash keeps the
+  //      modal exactly on the visible center.
+  // The `clientReady` gate keeps the onboarding modal hidden during
+  // the pre-hydration frame so localStorage-backed reps don't see a
+  // flash of the "Welcome" copy before their name is restored. The
+  // splash itself still renders in that frame so the transition from
+  // SSR → hydrated → signed-in stays visually stable.
+  if (!currentRep) {
+    return (
+      <PreAuthShell>
+        {clientReady && (
+          <RepOnboarding open onComplete={setCurrentRep} />
+        )}
+      </PreAuthShell>
+    );
+  }
 
-      <CustomerPickerCard
+  return (
+    <div className="flex min-h-screen flex-col">
+      <TopRail
         selectedId={selectedCustomerId}
         customer={selectedCustomer}
+        status={status}
         connected={status !== "idle"}
-        fullyConnected={status === "connected"}
-        agentBusy={isAgentResponding}
-        onChange={(id) => setSelectedCustomerId(id)}
-        onBriefMe={handleBriefMe}
+        onSelectCustomer={(id) => setSelectedCustomerId(id)}
+        callHistoryCount={callHistory.length}
+        logActive={stageView === "log"}
+        onToggleLog={toggleCallLog}
+        rep={currentRep}
+        onSignOut={clearCurrentRep}
       />
 
-      <section className="flex flex-col items-center gap-4">
-        <div className="flex flex-col items-center gap-2">
-          <VoiceOrb
-            phase={orbPhase}
-            amplitude={orbPhase === "listening" ? micAmplitude : 0}
-            size={80}
-          />
-          <div
-            className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground"
-            aria-live="polite"
-          >
-            {orbLabel}
-          </div>
-        </div>
-        <StatusBadge status={status} />
-
-        {status === "idle" && (
-          <Button
-            size="lg"
-            onClick={connect}
-            disabled={consentOpen}
-            className="h-14 min-w-[12rem] rounded-full px-8 text-base"
-          >
-            Start talking
-          </Button>
-        )}
-
-        {status === "connecting" && (
-          <Button
-            size="lg"
-            variant="outline"
-            disabled
-            className="h-14 min-w-[12rem] rounded-full px-8 text-base"
-          >
-            Connecting…
-          </Button>
-        )}
-
-        {status === "connected" && (
-          <Button
-            size="lg"
-            variant="destructive"
-            onClick={disconnect}
-            className="h-14 min-w-[12rem] rounded-full px-8 text-base"
-          >
-            End call
-          </Button>
-        )}
-
-        {error && (
-          <div
-            role="alert"
-            className="flex max-w-md items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
-          >
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <div className="flex-1 flex flex-col gap-1">
-              <div className="font-medium">{error}</div>
-              {errorKind === "mic_denied" && (
-                <div className="text-destructive/80">
-                  Click the lock icon in your browser address bar → set
-                  Microphone to &quot;Allow&quot; → click Start talking again.
-                </div>
-              )}
-              {errorKind === "network" && (
-                <div className="text-destructive/80">
-                  Check your internet connection, then retry.
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setError(null);
-                  setErrorKind("none");
-                }}
-                className="mt-0.5 self-start text-[10px] uppercase tracking-wide text-destructive/70 hover:text-destructive"
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        )}
-
-        {status === "connected" &&
-          sessionRemainingMs != null &&
-          sessionRemainingMs < 2 * 60 * 1000 && (
-            <div className="text-[10px] font-mono uppercase tracking-wider text-amber-400/80">
-              auto-end in {formatSecondsCountdown(sessionRemainingMs)}
-            </div>
+      <main className="mx-auto flex w-full max-w-[1400px] flex-1 flex-col lg:flex-row">
+        <section
+          className={cn(
+            "flex min-w-0 flex-1 flex-col px-4 pt-5 pb-8 sm:px-6 lg:px-10 lg:pt-7 lg:pb-10"
           )}
-
-        <p className="max-w-md text-center text-xs text-muted-foreground">
-          Click &quot;Start talking&quot; and allow microphone access. Try:{" "}
-          <em>&quot;What was their last objection?&quot;</em>,{" "}
-          <em>&quot;Who&apos;s the champion here?&quot;</em>, or{" "}
-          <em>&quot;Save a note that they want annual prepay at 12%.&quot;</em>
-        </p>
-      </section>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
-            Transcript
-          </CardTitle>
-          {transcript.length > 0 && (
-            <CardAction>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearTranscript}
-                className="text-muted-foreground"
-              >
-                Clear
-              </Button>
-            </CardAction>
-          )}
-        </CardHeader>
-        <CardContent>
-          <ScrollArea ref={transcriptScrollRef} className="h-72">
-            {transcript.length === 0 ? (
-              <div className="flex h-full min-h-40 items-center justify-center text-center text-sm text-muted-foreground">
-                {status === "connected"
-                  ? "Listening… say something."
-                  : "Start a call to see the live transcript."}
+          aria-label="Live call stage"
+        >
+          {stageView === "log" ? (
+            <CallLogView
+              history={callHistory}
+              summaryState={summary}
+              onOpenDetail={restoreSummaryFromHistory}
+              onCloseDetail={dismissSummary}
+              onBackHome={closeCallLog}
+              onClear={clearCallHistory}
+              onRetry={() =>
+                summary.phase === "error" &&
+                requestSummary(summary.retryPayload)
+              }
+            />
+          ) : showSummaryStage ? (
+            <div className="earshot-stagger-hero flex flex-col gap-6">
+              <div className="flex items-center gap-4">
+                <VoiceOrb phase="idle" size={72} halo />
+                <div className="flex flex-col leading-tight">
+                  <span
+                    className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground"
+                  >
+                    call ended
+                  </span>
+                  <span
+                    className="text-2xl italic text-foreground"
+                    style={{ fontFamily: "var(--font-display)" }}
+                  >
+                    post-call summary
+                  </span>
+                </div>
+                <div className="ml-auto flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={connect}
+                    disabled={consentOpen}
+                    className={cn(
+                      "h-9 gap-1.5 rounded-full px-4 text-xs uppercase tracking-wider",
+                      "shadow-[0_0_24px_-6px_rgba(168,132,247,0.55)]"
+                    )}
+                  >
+                    Start new call
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={openCallLog}
+                    className="h-9 gap-1.5 rounded-full border-border/70 px-4 text-xs uppercase tracking-wider text-muted-foreground hover:text-foreground"
+                  >
+                    View all calls
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={dismissSummary}
+                    aria-label="Dismiss summary"
+                    className="h-9 w-9 rounded-full text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
-            ) : (
-              <ol className="flex flex-col gap-2 pr-3">
-                {transcript.map((m) => {
-                  const effective = edits[m.id] ?? m.text;
-                  const divergences: string[] = [];
-                  if (m.role === "user") {
-                    for (const call of toolCalls) {
-                      if (call.sourceItemId !== m.id) continue;
-                      const divergent = hasCustomerDivergence(
-                        call.args,
-                        effective
-                      );
-                      if (divergent && !divergences.includes(divergent)) {
-                        divergences.push(divergent);
-                      }
-                    }
-                  }
-                  return (
-                    <TranscriptLine
-                      key={m.id}
-                      message={m}
-                      editedText={edits[m.id]}
-                      isEditing={editingId === m.id}
-                      divergences={divergences}
-                      onStartEdit={() => startEdit(m.id)}
-                      onSaveEdit={(newText) => saveEdit(m.id, m.text, newText)}
-                      onCancelEdit={cancelEdit}
-                      onUndoEdit={() => undoEdit(m.id)}
-                    />
-                  );
-                })}
-              </ol>
-            )}
-          </ScrollArea>
-        </CardContent>
-      </Card>
-
-      {summary.phase !== "idle" && (
-        <PostCallSummaryCard
-          state={summary}
-          onDismiss={dismissSummary}
-          onRetry={() =>
-            summary.phase === "error" && requestSummary(summary.retryPayload)
-          }
-        />
-      )}
-
-      {tasks.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
-              Follow-up tasks
-            </CardTitle>
-            <CardAction>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearAllTasks}
-                className="text-muted-foreground"
-              >
-                Clear
-              </Button>
-            </CardAction>
-          </CardHeader>
-          <CardContent>
-            <ol className="flex flex-col gap-2">
-              {tasks.map((task) => (
-                <TaskRow key={task.id} task={task} />
-              ))}
-            </ol>
-          </CardContent>
-        </Card>
-      )}
-
-      {notes.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
-              Saved notes
-            </CardTitle>
-            <CardAction>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearAllNotes}
-                className="text-muted-foreground"
-              >
-                Clear
-              </Button>
-            </CardAction>
-          </CardHeader>
-          <CardContent>
-            <ol className="flex flex-col gap-2">
-              {notes.map((note) => (
-                <NoteRow key={note.id} note={note} />
-              ))}
-            </ol>
-          </CardContent>
-        </Card>
-      )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
-            Agent actions
-          </CardTitle>
-          {toolCalls.length > 0 && (
-            <CardAction>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearToolCalls}
-                className="text-muted-foreground"
-              >
-                Clear
-              </Button>
-            </CardAction>
-          )}
-        </CardHeader>
-        <CardContent>
-          {toolCalls.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-              No tool calls yet. Ask the agent to save a note or set a reminder.
+              <PostCallSummaryCard
+                state={summary}
+                onDismiss={dismissSummary}
+                onRetry={() =>
+                  summary.phase === "error" &&
+                  requestSummary(summary.retryPayload)
+                }
+              />
             </div>
           ) : (
-            <ol className="flex flex-col gap-3">
-              {toolCalls.map((call) => (
-                <ToolCallCard key={call.id} call={call} />
-              ))}
-            </ol>
+            <>
+              {/* Two-column hero (orb+actions | customer brief) stays
+                  mounted across idle/connecting/connected so the rep
+                  always has CRM context while talking. The transcript
+                  below still gets the full row width. */}
+              <div className="flex flex-col gap-8 md:flex-row md:items-start md:gap-12 lg:gap-16">
+                <div className="flex flex-col items-center gap-4 md:w-[320px] md:shrink-0">
+                  <div className="earshot-stagger-orb flex flex-col items-center gap-2">
+                    <VoiceOrb
+                      phase={orbPhase}
+                      amplitude={orbPhase === "listening" ? micAmplitude : 0}
+                      size={104}
+                      halo
+                    />
+                    <div
+                      className="text-base italic text-foreground/80"
+                      style={{ fontFamily: "var(--font-display)" }}
+                      aria-live="polite"
+                    >
+                      {orbLabel}
+                    </div>
+                  </div>
+
+                  <div className="earshot-stagger-hero flex flex-wrap items-center justify-center gap-2.5">
+                    {status === "idle" && (
+                      <Button
+                        onClick={connect}
+                        disabled={consentOpen}
+                        className={cn(
+                          "h-9 rounded-full px-5 text-[12px] font-medium uppercase tracking-[0.14em]",
+                          "shadow-[0_0_28px_-6px_rgba(168,132,247,0.55),inset_0_1px_0_rgba(255,255,255,0.12)]",
+                          "ring-1 ring-[--color-accent-voice]/40 transition-shadow",
+                          "hover:shadow-[0_0_40px_-4px_rgba(168,132,247,0.75),inset_0_1px_0_rgba(255,255,255,0.18)]"
+                        )}
+                      >
+                        Start talking
+                      </Button>
+                    )}
+
+                    {status === "connecting" && (
+                      <Button
+                        variant="outline"
+                        disabled
+                        className="h-9 rounded-full border-border/70 px-5 text-[12px] uppercase tracking-[0.14em]"
+                      >
+                        Connecting…
+                      </Button>
+                    )}
+
+                    {status === "connected" && (
+                      <Button
+                        variant="destructive"
+                        onClick={disconnect}
+                        className="h-9 rounded-full px-5 text-[12px] font-medium uppercase tracking-[0.14em]"
+                      >
+                        End call
+                      </Button>
+                    )}
+
+                    <Button
+                      variant="outline"
+                      onClick={handleBriefMe}
+                      disabled={
+                        status !== "connected" ||
+                        !selectedCustomer ||
+                        isAgentResponding
+                      }
+                      className={cn(
+                        "h-9 gap-1.5 rounded-full border-border/70 bg-card/40 px-4 text-[12px]",
+                        "hover:bg-card/70 hover:text-foreground"
+                      )}
+                      title={
+                        !selectedCustomer
+                          ? "Pick a customer first"
+                          : status !== "connected"
+                          ? "Connect before requesting a brief"
+                          : isAgentResponding
+                          ? "Agent is already speaking"
+                          : undefined
+                      }
+                    >
+                      <Sparkles className="h-3.5 w-3.5 text-[--color-accent-voice]" />
+                      Brief me
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="w-full min-w-0 md:flex-1">
+                  <PreCallBriefing
+                    customer={selectedCustomer}
+                    latestCall={latestCallForSelected}
+                    // Only wire the click-through during idle. Mid-
+                    // call, the row stays visible but inert so the rep
+                    // can't accidentally jump to the post-call view.
+                    onOpenSummary={
+                      status === "idle" && latestCallForSelected
+                        ? () =>
+                            restoreSummaryFromHistory(latestCallForSelected)
+                        : undefined
+                    }
+                  />
+                </div>
+              </div>
+
+              {error && (
+                <div
+                  role="alert"
+                  className="mx-auto mt-5 flex max-w-md items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+                >
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <div className="flex flex-1 flex-col gap-1">
+                    <div className="font-medium">{error}</div>
+                    {errorKind === "mic_denied" && (
+                      <div className="text-destructive/80">
+                        Click the lock icon in your browser address bar → set
+                        Microphone to &quot;Allow&quot; → click Start talking again.
+                      </div>
+                    )}
+                    {errorKind === "network" && (
+                      <div className="text-destructive/80">
+                        Check your internet connection, then retry.
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setError(null);
+                        setErrorKind("none");
+                      }}
+                      className="mt-0.5 self-start text-[10px] uppercase tracking-wide text-destructive/70 hover:text-destructive"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Merged transcript + tool-call feed */}
+              <div className="earshot-stagger-hero mt-7 flex min-h-0 flex-1 flex-col">
+                <div className="mb-3 flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                  <span className="text-foreground/80">Live transcript</span>
+                  <div className="h-px flex-1 bg-border/50" />
+                  {transcript.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={clearTranscript}
+                      className="tracking-wider text-muted-foreground/70 transition-colors hover:text-foreground"
+                    >
+                      clear
+                    </button>
+                  )}
+                </div>
+                <ScrollArea
+                  ref={transcriptScrollRef}
+                  className="h-[44vh] min-h-[260px] rounded-lg border border-border/50 bg-card/20 px-3 py-3"
+                >
+                  {mergedFeed.length === 0 ? (
+                    <div className="flex h-full min-h-40 items-center justify-center px-6 text-center">
+                      <span
+                        className="text-base italic text-muted-foreground/80"
+                        style={{ fontFamily: "var(--font-display)" }}
+                      >
+                        {status === "connected"
+                          ? "Listening… say something."
+                          : "Start a call to see the live transcript."}
+                      </span>
+                    </div>
+                  ) : (
+                    <ol className="flex flex-col gap-2 pr-2">
+                      {mergedFeed.map((entry) => {
+                        if (entry.kind === "message") {
+                          const m = entry.message;
+                          const effective = edits[m.id] ?? m.text;
+                          const divergences: string[] = [];
+                          if (m.role === "user") {
+                            for (const call of toolCalls) {
+                              if (call.sourceItemId !== m.id) continue;
+                              const divergent = hasCustomerDivergence(
+                                call.args,
+                                effective
+                              );
+                              if (
+                                divergent &&
+                                !divergences.includes(divergent)
+                              ) {
+                                divergences.push(divergent);
+                              }
+                            }
+                          }
+                          return (
+                            <TranscriptLine
+                              key={m.id}
+                              message={m}
+                              editedText={edits[m.id]}
+                              isEditing={editingId === m.id}
+                              divergences={divergences}
+                              onStartEdit={() => startEdit(m.id)}
+                              onSaveEdit={(newText) =>
+                                saveEdit(m.id, m.text, newText)
+                              }
+                              onCancelEdit={cancelEdit}
+                              onUndoEdit={() => undoEdit(m.id)}
+                            />
+                          );
+                        }
+                        return (
+                          <InlineToolCallRow
+                            key={entry.call.id}
+                            call={entry.call}
+                          />
+                        );
+                      })}
+                    </ol>
+                  )}
+                </ScrollArea>
+              </div>
+            </>
           )}
-        </CardContent>
-      </Card>
+        </section>
+
+        {/* Ledger column */}
+        <div
+          className={cn(
+            "w-full border-t border-border/70",
+            "lg:sticky lg:top-14 lg:h-[calc(100vh-3.5rem-2rem)] lg:w-[380px] lg:shrink-0 lg:self-start lg:border-l lg:border-t-0"
+          )}
+        >
+          <LedgerPanel
+            tasks={tasks}
+            notes={notes}
+            toolCalls={toolCalls}
+            onClearTasks={clearAllTasks}
+            onClearNotes={clearAllNotes}
+            onClearActions={clearToolCalls}
+          />
+        </div>
+      </main>
+
+      <BottomRail
+        status={status}
+        connectedAt={connectedAt}
+        remainingMs={sessionRemainingMs}
+      />
 
       <ConsentDialog open={consentOpen} onAccept={acceptConsent} />
-    </main>
+    </div>
   );
 }

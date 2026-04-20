@@ -13,17 +13,9 @@ import {
   ShieldAlert,
   Target,
   User,
-  X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { formatMeddicKey } from "@/app/lib/helpers";
 import type { CallSummary, MeddicSummary, SummaryState } from "@/app/lib/types";
@@ -73,82 +65,80 @@ export function PostCallSummaryCard({
   const forCustomer = state.phase !== "idle" ? state.forCustomer : null;
 
   return (
-    <Card className="overflow-hidden border-primary/20">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-sm font-medium uppercase tracking-wide text-muted-foreground">
-          <FileText className="h-4 w-4 text-primary" />
-          Post-call summary
+    <section
+      className={cn(
+        "relative overflow-hidden rounded-xl border border-[--color-accent-voice]/25 bg-card/40",
+        "px-5 py-5 shadow-[0_0_48px_-20px_rgba(168,132,247,0.4)]"
+      )}
+      aria-label="Post-call summary"
+    >
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[--color-accent-voice]/60 to-transparent"
+      />
+      <div className="flex items-start justify-between gap-3 pb-3">
+        <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+          <FileText className="h-3.5 w-3.5 text-[--color-accent-voice]" />
+          structured summary
           {forCustomer && (
-            <span className="text-muted-foreground/70 normal-case tracking-normal">
+            <span className="normal-case tracking-normal text-muted-foreground/70">
               · for {forCustomer}
             </span>
           )}
-        </CardTitle>
-        <CardAction>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onDismiss}
-            aria-label="Dismiss summary"
-            className="text-muted-foreground"
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        </CardAction>
-      </CardHeader>
-      <CardContent>
-        {state.phase === "loading" && (
-          <div className="flex items-center gap-3 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin text-primary" />
-            <span>Extracting structured notes from the call…</span>
-          </div>
-        )}
+        </div>
+      </div>
 
-        {state.phase === "empty" && (
-          <div className="flex items-center gap-3 text-sm text-muted-foreground">
-            <AlertTriangle className="h-4 w-4 text-amber-400" />
-            <span>
-              Call was too short to summarize. Start another call and speak
-              with the copilot to generate a summary.
-            </span>
-          </div>
-        )}
+      {state.phase === "loading" && (
+        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin text-[--color-accent-voice]" />
+          <span>Extracting structured notes from the call…</span>
+        </div>
+      )}
 
-        {state.phase === "error" && (
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-destructive" />
-            <div className="flex-1 flex flex-col gap-2">
-              <div className="text-sm">
-                Couldn&apos;t generate the summary.
-                <span className="ml-2 font-mono text-xs text-muted-foreground">
-                  {state.error}
-                </span>
-              </div>
-              <div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={onRetry}
-                  className="h-7 gap-1.5"
-                >
-                  <RotateCcw className="h-3 w-3" /> Retry
-                </Button>
-              </div>
+      {state.phase === "empty" && (
+        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+          <AlertTriangle className="h-4 w-4 text-amber-400" />
+          <span>
+            Call was too short to summarize. Start another call and speak
+            with the copilot to generate a summary.
+          </span>
+        </div>
+      )}
+
+      {state.phase === "error" && (
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-destructive" />
+          <div className="flex flex-1 flex-col gap-2">
+            <div className="text-sm">
+              Couldn&apos;t generate the summary.
+              <span className="ml-2 font-mono text-xs text-muted-foreground">
+                {state.error}
+              </span>
+            </div>
+            <div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onRetry}
+                className="h-7 gap-1.5"
+              >
+                <RotateCcw className="h-3 w-3" /> Retry
+              </Button>
             </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {state.phase === "ready" && (
-          <SummaryBody
-            summary={state.summary}
-            copied={copied}
-            crmSent={crmSent}
-            onCopy={handleCopy}
-            onSendToCrm={handleSendToCrm}
-          />
-        )}
-      </CardContent>
-    </Card>
+      {state.phase === "ready" && (
+        <SummaryBody
+          summary={state.summary}
+          copied={copied}
+          crmSent={crmSent}
+          onCopy={handleCopy}
+          onSendToCrm={handleSendToCrm}
+        />
+      )}
+    </section>
   );
 }
 
@@ -177,9 +167,14 @@ function SummaryBody({
   ).filter(([, v]) => v != null && v.trim().length > 0);
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-base font-medium leading-snug">{summary.headline}</p>
+        <p
+          className="text-2xl italic leading-tight text-foreground"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          {summary.headline}
+        </p>
         <Badge
           variant="outline"
           className={cn(

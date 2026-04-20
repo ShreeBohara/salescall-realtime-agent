@@ -1,5 +1,6 @@
 import { tool } from "@openai/agents-realtime";
 import { z } from "zod";
+import { findCustomer } from "../data/customers";
 import {
   findLatestActiveForCustomer,
   getTask,
@@ -16,13 +17,17 @@ const UpdateFollowUpTaskParams = z.object({
   customer: z
     .string()
     .describe(
-      "The CURRENT customer of the task — used as a disambiguator and as a fallback lookup if task_id doesn't match. This is NOT the field to use when changing who the task is for — use `new_customer` for that."
+      "The CURRENT customer account of the task — used as a disambiguator and as a fallback lookup if task_id doesn't match. Do NOT change this field to edit the task — see `new_customer` and `body` below."
     ),
   new_customer: z
     .string()
     .nullable()
     .describe(
-      "Use this field ONLY when the rep is correcting who the task is for (e.g. 'that task was supposed to be for Atmas, not Acme'). Pass the new customer name. Pass null if the customer should not change."
+      [
+        "Use this field ONLY to re-assign the task to a different CRM ACCOUNT/COMPANY (e.g. 'that task was supposed to be for Atmos, not Acme', 'move that reminder from Initech to Globex'). Must be an existing CRM customer name/alias — the tool will reject unknown names.",
+        "DO NOT use this field when the rep is correcting a person's name inside the task description. Example: task body 'call Michael'; rep says 'the call was with Sri, not Michael' — the ACCOUNT stays the same, you should update `body` to 'call Sri' and leave new_customer null.",
+        "Pass null if the account should not change.",
+      ].join(" ")
     ),
   due_at: z
     .string()
@@ -39,7 +44,10 @@ const UpdateFollowUpTaskParams = z.object({
     .string()
     .nullable()
     .describe(
-      "New description for the task. Pass null or the literal string 'unchanged' if this field should not change."
+      [
+        "New description for the task. Use this when the rep corrects WHAT the task is about or WHO (by person name) to contact, while the account stays the same. Example: task 'call Michael' → rep says 'call was with Sri not Michael' → pass body 'call Sri'.",
+        "Pass null or the literal string 'unchanged' if this field should not change.",
+      ].join(" ")
     ),
 });
 
@@ -76,8 +84,33 @@ export const updateFollowUpTask = tool({
     if (!isUnchanged(input.due_at)) patch.due_at = input.due_at as string;
     if (input.channel !== "unchanged") patch.channel = input.channel;
     if (!isUnchanged(input.body)) patch.body = input.body as string;
+
+    // new_customer is only valid if it names an actual CRM account.
+    // Person names mentioned inside the task body (e.g. "call Michael")
+    // are the #1 false-positive here — if the rep says "actually it's
+    // Sri, not Michael", the model is very tempted to slam that into
+    // new_customer. Reject anything that doesn't resolve to a known
+    // customer and steer the agent toward `body` instead.
     if (!isUnchanged(input.new_customer)) {
-      patch.customer = (input.new_customer as string).trim();
+      const candidate = (input.new_customer as string).trim();
+      const resolved = findCustomer(candidate);
+      if (!resolved) {
+        console.log("[tool:update_follow_up_task] rejected new_customer", {
+          candidate,
+          input,
+        });
+        return JSON.stringify({
+          ok: false,
+          error: "unknown_customer",
+          attempted: { new_customer: candidate },
+          message: [
+            `'${candidate}' is not a customer account in the CRM.`,
+            "If the rep was correcting a PERSON's name inside the task (e.g. 'call Michael' → 'call Sri'), update `body` instead — the account stays the same.",
+            "If they really meant to move this task to another account, re-call update_follow_up_task with `new_customer` set to the exact CRM account name.",
+          ].join(" "),
+        });
+      }
+      patch.customer = resolved.name;
     }
 
     if (Object.keys(patch).length === 0) {

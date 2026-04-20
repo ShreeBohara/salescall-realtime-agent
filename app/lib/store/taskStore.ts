@@ -23,6 +23,14 @@ export type FollowUpTask = {
   status: TaskStatus;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Display name of the rep who created this task, captured from
+   * the repStore at tool-execute time. Optional for the same reason
+   * as `Note.createdBy` — fixtures and pre-sign-in calls have no
+   * meaningful author. Kept silent in the UI today; present in the
+   * data so a future per-rep filter has it ready.
+   */
+  createdBy?: string;
 };
 
 type Listener = () => void;

@@ -44,6 +44,16 @@ export type Customer = {
   pastObjections: string[];
   openTickets: number;
   recentActivity: string[];
+  /**
+   * A TIGHT 1–2 sentence narrative brief (~20–30 words) a BDR manager
+   * would text a rep thirty seconds before the call: current state +
+   * the single most important thing to close on this touch. Optimised
+   * for scannability — the UI renders it as a large italic paragraph,
+   * so anything over two sentences starts to feel like a wall. Details
+   * (deal size, contact, objections, activity timeline) live in the
+   * surrounding structured blocks; don't duplicate them here.
+   */
+  briefing: string;
 };
 
 export const CUSTOMERS: Customer[] = [
@@ -78,6 +88,8 @@ export const CUSTOMERS: Customer[] = [
       "2026-04-03 — Product demo to engineering team (8 attendees, positive feedback)",
       "2026-03-27 — Initial qualification call: identified MTTR as core metric",
     ],
+    briefing:
+      "Pricing and a 3-month onboarding are the holdouts before CFO sign-off — three open trial tickets are stalling momentum.",
   },
   {
     id: "atmos-industrial",
@@ -110,6 +122,8 @@ export const CUSTOMERS: Customer[] = [
       "2026-04-01 — Initial discovery call — surfaced Globex competitive pressure",
       "2026-03-22 — Inbound lead from LinkedIn ad campaign",
     ],
+    briefing:
+      "Raj is still the only stakeholder — surface the economic buyer before we propose. Globex is flashing 20% cheaper.",
   },
   {
     id: "globex-systems",
@@ -142,6 +156,8 @@ export const CUSTOMERS: Customer[] = [
       "2026-03-18 — Security questionnaire completed and submitted",
       "2026-02-28 — CMIO introduced champion role; no second stakeholder yet",
     ],
+    briefing:
+      "Proposal out, two weeks of silence. Lock a second stakeholder or the board vote slips another quarter.",
   },
   {
     id: "initech-solutions",
@@ -173,6 +189,8 @@ export const CUSTOMERS: Customer[] = [
       "2026-03-15 — Year-1 renewal signed",
       "2026-02-05 — Success metric review: risk-model retraining cadence met SLA",
     ],
+    briefing:
+      "Renewing with a 5-seat Q3 expansion — VP Finance already signed off. Lead with year-1 wins and close the seat count.",
   },
 ];
 

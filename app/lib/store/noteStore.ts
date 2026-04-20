@@ -20,6 +20,16 @@ export type Note = {
   status: NoteStatus;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Display name of the rep who authored this note, captured from
+   * the repStore at tool-execute time. Optional because notes saved
+   * before the rep signed in (or during automated test fixtures)
+   * have no meaningful author — the UI treats null/undefined as
+   * "unattributed" and skips the byline. Not surfaced in the UI
+   * today; we stamp it silently so a future "Shree's notes" filter
+   * or audit view has the data ready.
+   */
+  createdBy?: string;
 };
 
 type Listener = () => void;

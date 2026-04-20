@@ -10,6 +10,8 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-heading: var(--font-geist-sans);
+  --font-display: var(--font-instrument-serif);
+  --color-accent-voice: var(--accent-voice);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -86,9 +88,9 @@
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
+  --card: oklch(0.19 0.008 270);
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
+  --popover: oklch(0.19 0.008 270);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
@@ -98,8 +100,9 @@
   --muted-foreground: oklch(0.708 0 0);
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
+  --accent-voice: oklch(0.68 0.22 295);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
+  --border: oklch(1 0 0 / 8%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
   --chart-1: oklch(0.87 0 0);
@@ -148,5 +151,114 @@
   100% {
     transform: scale(1.45);
     opacity: 0;
+  }
+}
+
+/* Ambient halo — bleeds violet into the page, intensifies on connect. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    ellipse 60% 50% at 50% 30%,
+    oklch(0.68 0.22 295 / var(--halo-opacity, 0.05)),
+    transparent 65%
+  );
+  transition: background 600ms ease-out;
+}
+
+body[data-status="idle"] {
+  --halo-opacity: 0.05;
+}
+body[data-status="connecting"] {
+  --halo-opacity: 0.1;
+}
+body[data-status="connected"] {
+  --halo-opacity: 0.18;
+}
+
+/* Ensure app content sits above the halo layer. */
+body > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes earshot-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes earshot-slide-right {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes earshot-orb-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.earshot-stagger-top-rail {
+  animation: earshot-fade-up 420ms ease-out both;
+}
+.earshot-stagger-bottom-rail {
+  animation: earshot-fade-up 420ms ease-out 80ms both;
+}
+.earshot-stagger-orb {
+  animation: earshot-orb-in 540ms cubic-bezier(0.34, 1.56, 0.64, 1) 160ms both;
+}
+.earshot-stagger-hero {
+  animation: earshot-fade-up 420ms ease-out 240ms both;
+}
+.earshot-stagger-ledger {
+  animation: earshot-slide-right 480ms ease-out 320ms both;
+}
+
+@keyframes earshot-chip-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.earshot-chip-in {
+  animation: earshot-chip-in 180ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .earshot-stagger-top-rail,
+  .earshot-stagger-bottom-rail,
+  .earshot-stagger-orb,
+  .earshot-stagger-hero,
+  .earshot-stagger-ledger,
+  .earshot-chip-in {
+    animation: none !important;
+  }
+  body::before {
+    transition: none !important;
   }
 }

@@ -31,11 +31,14 @@ export function VoiceOrb({
   phase,
   amplitude,
   size = 72,
+  halo = false,
   className,
 }: {
   phase: VoiceOrbPhase;
   amplitude?: number;
   size?: number;
+  /** Render an expanded radial glow around the orb. Scales with `size`. */
+  halo?: boolean;
   className?: string;
 }) {
   const amp = Math.max(0, Math.min(1, amplitude ?? 0));
@@ -53,6 +56,13 @@ export function VoiceOrb({
       ? "bg-[radial-gradient(circle_at_30%_30%,oklch(0.85_0.14_250),oklch(0.62_0.2_260)_45%,oklch(0.3_0.1_260)_90%)]"
       : /* listening */ "bg-[radial-gradient(circle_at_30%_30%,oklch(0.85_0.12_260),oklch(0.62_0.22_270)_45%,oklch(0.3_0.12_270)_90%)]";
 
+  const haloOpacity =
+    phase === "listening" || phase === "speaking" || phase === "thinking"
+      ? 0.55
+      : phase === "connecting"
+      ? 0.3
+      : 0.2;
+
   return (
     <div
       className={cn(
@@ -63,6 +73,18 @@ export function VoiceOrb({
       style={{ width: size, height: size }}
       aria-hidden="true"
     >
+      {halo && (
+        <span
+          className="pointer-events-none absolute rounded-full blur-3xl transition-opacity duration-700"
+          style={{
+            width: size * 2.2,
+            height: size * 2.2,
+            background:
+              "radial-gradient(circle, oklch(0.68 0.22 295 / 0.55), transparent 65%)",
+            opacity: haloOpacity,
+          }}
+        />
+      )}
       {phase === "connecting" && (
         <span
           className="voice-orb-motion absolute inset-0 rounded-full border-2 border-transparent border-t-primary/70 border-r-primary/40 animate-[spin_1.2s_linear_infinite]"
