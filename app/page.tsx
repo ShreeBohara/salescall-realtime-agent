@@ -388,28 +388,39 @@ export default function Home() {
       setConnectedAt(Date.now());
       setStatus("connected");
 
-      // Server-VAD silence window. We used to run 350 ms for snappier
-      // end-of-turn, but live testing surfaced a reliability problem:
-      // when the rep pauses mid-thought (breath, "um", or a
-      // two-beat sentence), the server closes the turn at 350 ms,
-      // the model starts generating, and the rep's next breath
-      // registers as a new turn — which interrupts the in-progress
-      // response before it lands. Net effect: the rep hears silence
-      // and sees no tool call, even though the model was about to
-      // act. 500 ms is the server default and keeps the cancel /
-      // delete / multi-sentence flows reliable; re-testing, ~150 ms
-      // of extra perceived latency is an easy trade for never
-      // swallowing an action. Don't lower below 400 ms without
-      // re-running the full cancel/delete script.
+      // Turn detection: `semantic_vad`, not `server_vad`.
+      //
+      // We originally overrode the SDK default with `server_vad` and
+      // tuned `silenceDurationMs` down to 350 ms for snappier
+      // end-of-turn. Live testing surfaced a nasty failure mode with
+      // that choice: `server_vad` is pure amplitude-based silence
+      // detection, so any mid-sentence breath, filler word, or
+      // ambient noise trips the threshold, closes the turn, and the
+      // model starts generating. If the rep's next breath then
+      // registers as a new turn before the response lands, the
+      // in-flight response gets interrupted and the tool call +
+      // confirmation disappear into the void — the rep hears nothing
+      // and sees nothing, even though the model was about to act.
+      //
+      // `semantic_vad` is the SDK default precisely for this reason:
+      // the model itself decides whether an utterance is complete by
+      // listening to the SEMANTICS, not just the waveform. A pause
+      // after "the call is with Mike, not —" is understood as
+      // mid-thought; a pause after "cancel my reminder about the
+      // CFO" is understood as complete. Pauses, um's, and ambient
+      // hiss no longer close the turn prematurely.
+      //
+      // `eagerness: 'auto'` lets the model self-tune turn-closing
+      // patience based on conversational context. `createResponse:
+      // true` keeps the server firing responses automatically (same
+      // as before).
       try {
         transport.updateSessionConfig({
           audio: {
             input: {
               turnDetection: {
-                type: "server_vad",
-                silenceDurationMs: 500,
-                prefixPaddingMs: 200,
-                threshold: 0.5,
+                type: "semantic_vad",
+                eagerness: "auto",
                 createResponse: true,
               },
             },
