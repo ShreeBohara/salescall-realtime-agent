@@ -7,6 +7,7 @@ import {
   RealtimeSession,
 } from "@openai/agents-realtime";
 import { AlertTriangle } from "lucide-react";
+import { toast } from "sonner";
 
 import { saveNote } from "./lib/tools/saveNote";
 import { updateNote } from "./lib/tools/updateNote";
@@ -212,6 +213,13 @@ export default function Home() {
   const sessionRef = useRef<RealtimeSession | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const latestUserItemRef = useRef<{ id: string; text: string } | null>(null);
+  /**
+   * Consecutive `rate_limit_exceeded` retries for the current failure
+   * chain. Reset to 0 as soon as any response completes successfully.
+   * Capped at 2 to prevent a tight retry loop when the org's TPM
+   * budget is genuinely exhausted for the minute.
+   */
+  const rateLimitRetriesRef = useRef(0);
 
   // Auto-scroll transcript on new turns
   useEffect(() => {
@@ -477,6 +485,60 @@ export default function Home() {
           syncSessionMuteRef.current();
         }
 
+        // Rate-limit recovery. After a handful of rapid tool turns the
+        // accumulated conversation context pushes each request over the
+        // org's TPM limit (40K/min on gpt-4o-realtime). The server
+        // accepts the response, emits response.created, then immediately
+        // emits response.done with status='failed' +
+        // error.code='rate_limit_exceeded' and NO audio — leaving the
+        // rep staring at a silent UI. The SDK does not auto-retry, so
+        // we parse the "try again in X" hint from the error message and
+        // re-issue response.create ourselves. Capped at 2 retries per
+        // failure chain to avoid a tight loop if the limit is genuinely
+        // exhausted.
+        if (type === "response.done") {
+          const resp = (event as { response?: { status?: string; status_details?: { error?: { code?: string; message?: string } } } }).response;
+          if (
+            resp?.status === "failed" &&
+            resp.status_details?.error?.code === "rate_limit_exceeded"
+          ) {
+            const message = resp.status_details.error.message ?? "";
+            const match = message.match(/try again in\s+(\d+(?:\.\d+)?)(ms|s)\b/i);
+            let waitMs = 500;
+            if (match) {
+              const n = parseFloat(match[1]);
+              waitMs = match[2].toLowerCase() === "s" ? n * 1000 : n;
+            }
+            waitMs = Math.min(Math.max(waitMs + 250, 300), 5000);
+
+            if (rateLimitRetriesRef.current < 2) {
+              rateLimitRetriesRef.current += 1;
+              const attempt = rateLimitRetriesRef.current;
+              toast.warning("Agent is catching up…", {
+                description: `Rate limit — retrying in ${Math.round(
+                  waitMs
+                )}ms (attempt ${attempt}/2)`,
+                duration: Math.min(waitMs + 1500, 4000),
+              });
+              window.setTimeout(() => {
+                try {
+                  transport.requestResponse?.();
+                } catch (err) {
+                  console.warn("[rate-limit] retry failed", err);
+                }
+              }, waitMs);
+            } else {
+              toast.error("Agent hit a rate limit — please pause briefly.", {
+                duration: 4000,
+              });
+            }
+          } else if (resp?.status === "completed") {
+            // Successful response — reset the retry counter so the next
+            // rate-limit chain starts fresh.
+            rateLimitRetriesRef.current = 0;
+          }
+        }
+
         if (
           type.includes("speech_started") ||
           type.includes("speech_stopped") ||
@@ -614,6 +676,7 @@ export default function Home() {
     // muted on the next Start talking.
     userMutedRef.current = false;
     agentSpeakingRef.current = false;
+    rateLimitRetriesRef.current = 0;
     setMuted(false);
 
     // Cancel any pending fallback chime so it can't fire after the
