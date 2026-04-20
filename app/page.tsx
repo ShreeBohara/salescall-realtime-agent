@@ -410,17 +410,35 @@ export default function Home() {
       // CFO" is understood as complete. Pauses, um's, and ambient
       // hiss no longer close the turn prematurely.
       //
-      // `eagerness: 'auto'` lets the model self-tune turn-closing
-      // patience based on conversational context. `createResponse:
-      // true` keeps the server firing responses automatically (same
-      // as before).
+      // `eagerness: 'low'` is deliberate, not the default.
+      //
+      // With 'auto' (the SDK default) we still hit silent failures on
+      // rapid-fire asks: rep says utterance A, model starts
+      // responding, rep starts utterance B before A finishes →
+      // `input_audio_buffer.speech_started` fires → the SDK's
+      // WebRTC `interrupt()` handler UNCONDITIONALLY sends
+      // `response.cancel` + `output_audio_buffer.clear`. The
+      // `interrupt_response` session param does not control this
+      // (it's dead code for WebRTC — verified against SDK source).
+      //
+      // The only way to reduce the frequency of speech_started
+      // mid-response is to make semantic VAD more patient about
+      // declaring turns complete. `'low'` eagerness gives the model
+      // extra breathing room, so short confirmations like
+      // "Reminder set." finish playing before the rep's next
+      // utterance kicks in. Trade-off: end-of-turn feels ~200 ms
+      // slower — worth it to stop dropping tool confirmations on
+      // back-to-back asks.
+      //
+      // `createResponse: true` keeps the server firing responses
+      // automatically.
       try {
         transport.updateSessionConfig({
           audio: {
             input: {
               turnDetection: {
                 type: "semantic_vad",
-                eagerness: "auto",
+                eagerness: "low",
                 createResponse: true,
               },
             },
