@@ -95,7 +95,11 @@ export function CallLogView({
   const inDetail = summaryState.phase === "ready";
 
   return (
-    <div className="earshot-stagger-hero flex flex-col gap-6">
+    // Section wrapper is `lg:overflow-hidden` at the page level, so
+    // the call log owns its own scroll on desktop. Without this the
+    // table would get clipped mid-row whenever history grew past the
+    // viewport.
+    <div className="earshot-stagger-hero flex flex-col gap-6 lg:h-full lg:overflow-y-auto lg:pr-1">
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"

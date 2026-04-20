@@ -31,16 +31,21 @@ the interface; the UI is deliberately minimal.
 
 | Capability | How it's surfaced |
 |---|---|
-| Ask questions about the call / customer | Free-form voice turn, Earshot replies in `marin` voice |
+| **Personal sign-in** | First-visit modal captures the rep's name. Persisted to `localStorage`, threaded through the agent prompt (greets by name), top-right profile chip, and a `createdBy` stamp on every captured task/note. Sign-out loop re-opens the onboarding |
+| **Pre-call customer dossier** | Right of the orb — a concise italic brief + deal stage + contact + champion + recent-activity timeline + open objections. Sourced from a mock CRM (`app/lib/data/customers.ts`), persistent across idle / connecting / connected |
+| Ask questions about the call / customer | Free-form voice turn, Earshot replies in `marin` voice. Deeper drill-downs route through `get_customer_context` (7th tool) |
 | Capture a structured note + **revise / delete it later by voice** | `save_note` / `update_note` / `delete_note` — written to a shared in-browser `noteStore`, shown in the **Saved notes** panel with live status badges |
 | Create a follow-up task + **update / cancel it later by voice** | `create_follow_up_task` / `update_follow_up_task` / `cancel_follow_up_task` — written to `taskStore`, shown in the **Follow-up tasks** panel with strikethrough on cancel |
 | **Prevent duplicate tasks** | `create_follow_up_task` is schema-checked for near-duplicates (same customer + due + channel + body) — returns `duplicate_likely` to the agent, which asks the rep before taking action |
+| **Account vs. person safety** | Every update tool validates `new_customer` against known CRM accounts. Person-name corrections ("call Sri, not Michael") get routed into the task `body` instead of silently corrupting the account — with an explicit section of the system prompt teaching the distinction |
+| **Pause the call** | Icon-only Pause/Resume toggle next to End Call. Mutes the mic via `session.mute()` and interrupts any in-progress agent response; the conversation state survives so resume is free |
 | **Edit what the rep said** | Inline pencil icon on user transcript lines. Edits are local UI truth; tool args stay as the model captured them. "edited" badge + one-click undo |
 | **Surface transcript ↔ tool-arg divergence** | When a tool's `customer` arg doesn't match the transcript line it came from, an amber `→ <name>` chip appears inline. Editable in either direction (see [Demo edge case](#demo-edge-case)) |
-| See what was said | Live transcript strip, streams dim-to-solid as turns complete |
+| See what was said | Live transcript strip, streams dim-to-solid as turns complete. Elapsed time + auto-end warning sit under the orb, no bottom rail needed |
 | See what was _done_ | Agent actions feed — collapsible tool-call cards with args, result, elapsed ms |
+| **Post-call summary + history** | On disconnect, a master-detail card renders the MEDDIC-style summary from `/api/summarize`. A "Call log" button in the top rail opens a full-stage table of every prior Earshot call (`localStorage`-persisted) with click-through into archived summaries |
 
-All six tool `execute` handlers run client-side and write to in-browser
+All seven tool `execute` handlers run client-side and write to in-browser
 stores. Swapping each one for a real `/api/tools/*` route + database is a
 single-file change per tool — the Zod schemas stay the same. See
 [Known limitations](#known-limitations--future-work).
@@ -63,7 +68,8 @@ single-file change per tool — the Zod schemas stay the same. See
 │                   OpenAI Realtime API                                │
 │   model: gpt-realtime   ·   voice: marin   ·   transport: WebRTC     │
 │                                                                      │
-│   tool calls ──► 6 tools across 2 lifecycles:                        │
+│   tool calls ──► 7 tools total:                                      │
+│                    lookup: get_customer_context                      │
 │                    notes:  save / update / delete                    │
 │                    tasks:  create / update / cancel                  │
 │                  (executed in the browser against in-memory stores;  │
@@ -270,7 +276,7 @@ this repo):
 - [x] Voice flow: ask questions, capture notes, create follow-ups
 - [x] UI visualization of agent actions / tool calls (name, args, status, result, duplicate warnings)
 - [x] Transport choice explained ([WebRTC, see above](#1-webrtc-over-websocket))
-- [x] ≥1 real tool integration — **six wired** across two lifecycles (notes: save / update / delete, tasks: create / update / cancel)
+- [x] ≥1 real tool integration — **seven wired**: one CRM lookup (`get_customer_context`) + six mutating across two lifecycles (notes: save / update / delete, tasks: create / update / cancel)
 
 ### Additional goals (brief asks for ≥2, we have all four)
 
@@ -330,23 +336,51 @@ this repo):
 
 ```text
 app/
-├── api/session/route.ts           # mints ek_... ephemeral token
+├── api/
+│   ├── session/route.ts           # mints ek_... ephemeral token
+│   └── summarize/route.ts         # POST transcript → gpt-4o-mini JSON summary
+├── hooks/                         # side-effect hooks
+│   ├── use-consent.ts             # first-visit consent gate (localStorage)
+│   ├── use-mic-amplitude.ts       # 60Hz FFT → orb amplitude
+│   └── use-session-cap.ts         # 10-min wall clock + auto-disconnect
 ├── layout.tsx                     # forces dark mode, Geist fonts
-├── page.tsx                       # the entire voice UI (client component)
+├── page.tsx                       # composition root (session + JSX)
 └── lib/
+    ├── agent.ts                   # buildAgentInstructions + rep/customer context
+    ├── data/customers.ts          # 4-customer CRM seed + briefing field
+    ├── helpers.ts                 # pure helpers (divergence, formatters)
+    ├── types.ts                   # page-level shared types
     ├── store/
-    │   ├── taskStore.ts           # module-level task store + cached snapshot
-    │   └── noteStore.ts           # module-level note store + cached snapshot
+    │   ├── callHistoryStore.ts    # localStorage-persisted past calls
+    │   ├── customerStore.ts       # selected-customer state
+    │   ├── noteStore.ts           # notes + duplicate detection
+    │   ├── repStore.ts            # signed-in rep (localStorage)
+    │   └── taskStore.ts           # tasks + duplicate detection
     └── tools/
-        ├── saveNote.ts
-        ├── updateNote.ts
+        ├── getCustomerContext.ts  # 7th tool, fuzzy customer lookup
+        ├── saveNote.ts            # + force + duplicate detection
+        ├── updateNote.ts          # + new_customer CRM validation
         ├── deleteNote.ts
-        ├── createFollowUpTask.ts  # with near-duplicate detection
-        ├── updateFollowUpTask.ts
+        ├── createFollowUpTask.ts  # + force + duplicate detection
+        ├── updateFollowUpTask.ts  # + new_customer CRM validation
         └── cancelFollowUpTask.ts
 components/
 ├── ai-elements/                   # Vercel AI Elements (tool.tsx, code-block.tsx)
-└── ui/                            # shadcn primitives
+├── earshot/                       # feature UI
+│   ├── call-log-view.tsx          # full-stage history table
+│   ├── consent-dialog.tsx         # first-visit mic / data disclosure
+│   ├── inline-tool-call-row.tsx   # tool-call card in the transcript feed
+│   ├── ledger-panel.tsx           # Tasks / Notes / Actions tabs
+│   ├── orb-call-meta.tsx          # elapsed + auto-end + muted pill under orb
+│   ├── post-call-summary-card.tsx # MEDDIC summary renderer (4 phases)
+│   ├── pre-auth-shell.tsx         # clean splash behind the onboarding modal
+│   ├── pre-call-briefing.tsx      # customer dossier next to the orb
+│   ├── rep-onboarding.tsx         # first-visit "who are you?" modal
+│   ├── rep-profile-chip.tsx       # top-right signed-in chip + sign-out
+│   ├── top-rail.tsx               # customer picker + call-log + profile
+│   └── transcript-line.tsx        # editable user line + divergence chip
+├── voice-orb.tsx                  # 5-state reactive orb
+└── ui/                            # shadcn primitives (dialog, popover, tabs…)
 lib/utils.ts                       # shadcn cn() helper
 ```
 

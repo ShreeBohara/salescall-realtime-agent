@@ -249,13 +249,31 @@ body > * {
   animation: earshot-chip-in 180ms ease-out both;
 }
 
+/* Slow heartbeat for the coach-card deal-pulse dot. Long, gentle
+   ramp so it reads as ambient/alive without demanding attention. */
+@keyframes earshot-pulse-dot {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.82);
+  }
+}
+
+.earshot-pulse-dot {
+  animation: earshot-pulse-dot 2.4s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .earshot-stagger-top-rail,
   .earshot-stagger-bottom-rail,
   .earshot-stagger-orb,
   .earshot-stagger-hero,
   .earshot-stagger-ledger,
-  .earshot-chip-in {
+  .earshot-chip-in,
+  .earshot-pulse-dot {
     animation: none !important;
   }
   body::before {

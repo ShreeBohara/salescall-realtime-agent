@@ -198,29 +198,11 @@ export function TopRail({
         </div>
       </div>
 
-      {/* Secondary indicator row — contact name, title, and deal size
-          previously lived here, but they duplicated what the Customer
-          Brief panel already shows next to the orb. This row now only
-          surfaces signals that are NOT in the brief: an open-ticket
-          risk count and the "locked during call" hint while a session
-          is live. Hidden entirely when neither signal applies so the
-          top chrome stays quiet. */}
-      {customer && (customer.openTickets > 0 || connected) && (
+      {customer && connected && (
         <div className="mx-auto hidden h-7 w-full max-w-[1400px] items-center justify-end gap-2 border-t border-border/40 px-4 text-[11px] text-muted-foreground sm:flex sm:px-6 lg:px-8">
-          {customer.openTickets > 0 && (
-            <span className="text-amber-300/80">
-              {customer.openTickets} open ticket
-              {customer.openTickets === 1 ? "" : "s"}
-            </span>
-          )}
-          {customer.openTickets > 0 && connected && (
-            <span className="text-border">·</span>
-          )}
-          {connected && (
-            <span className="text-[10px] uppercase tracking-wider text-muted-foreground/80">
-              locked during call
-            </span>
-          )}
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground/80">
+            locked during call
+          </span>
         </div>
       )}
     </header>

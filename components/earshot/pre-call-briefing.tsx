@@ -139,6 +139,14 @@ export function PreCallBriefing({
         <span className="tabular-nums text-foreground/80">
           {customer.dealSize}
         </span>
+        {customer.openTickets > 0 && (
+          <>
+            <span className="text-border">/</span>
+            <span className="text-amber-300/80">
+              {customer.openTickets} open ticket{customer.openTickets === 1 ? "" : "s"}
+            </span>
+          </>
+        )}
       </div>
 
       {/* Narrative briefing — the headline content.

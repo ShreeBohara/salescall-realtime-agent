@@ -79,14 +79,15 @@ import { ConsentDialog } from "@/components/earshot/consent-dialog";
 import { PostCallSummaryCard } from "@/components/earshot/post-call-summary-card";
 import { TranscriptLine } from "@/components/earshot/transcript-line";
 import { TopRail } from "@/components/earshot/top-rail";
-import { BottomRail } from "@/components/earshot/bottom-rail";
 import { LedgerPanel } from "@/components/earshot/ledger-panel";
 import { InlineToolCallRow } from "@/components/earshot/inline-tool-call-row";
 import { PreCallBriefing } from "@/components/earshot/pre-call-briefing";
 import { CallLogView } from "@/components/earshot/call-log-view";
 import { RepOnboarding } from "@/components/earshot/rep-onboarding";
 import { PreAuthShell } from "@/components/earshot/pre-auth-shell";
-import { Sparkles, X } from "lucide-react";
+import { OrbCallMeta } from "@/components/earshot/orb-call-meta";
+import { CoachCard } from "@/components/earshot/coach-card";
+import { Pause, PhoneOff, Play, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -105,6 +106,14 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<ErrorKind>("none");
   const [connectedAt, setConnectedAt] = useState<number | null>(null);
+  /**
+   * Whether the mic is currently muted ("paused"). The RealtimeSession
+   * owns the underlying RTCRtpSender track; we mirror the state here
+   * so the UI can re-render the Pause/Resume toggle and the orb label
+   * without reaching into the session ref on every render. Reset to
+   * false on disconnect so a fresh call never starts pre-muted.
+   */
+  const [muted, setMuted] = useState(false);
 
   // Conversation data
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
@@ -223,8 +232,17 @@ export default function Home() {
       ? "speaking"
       : "listening";
 
+  // When the call is paused (mic muted), override whatever phase
+  // label we'd otherwise show. The orb's underlying animation stays
+  // in its derived state, but the TEXT needs to read "paused" so the
+  // rep isn't confused by a "listening" label while the agent can't
+  // actually hear them. We only apply the override while connected —
+  // `muted` is reset on disconnect, so this is just a safety for an
+  // intermediate connecting frame.
   const orbLabel: string =
-    orbPhase === "idle"
+    status === "connected" && muted
+      ? "paused"
+      : orbPhase === "idle"
       ? "ready"
       : orbPhase === "connecting"
       ? "connecting…"
@@ -431,6 +449,10 @@ export default function Home() {
     const startedAtSnapshot = connectedAt;
     setStatus("idle");
     setConnectedAt(null);
+    // Clear the paused flag so the next call starts unmuted. Without
+    // this, a rep who ends a call while paused would find their mic
+    // silently muted on the next `Start talking`.
+    setMuted(false);
 
     const customerAtEnd = getCustomerById(getSelectedCustomerId());
     const transcriptAtEnd = transcript
@@ -551,6 +573,37 @@ export default function Home() {
     if (isAgentResponding) return;
 
     session.sendMessage(buildBriefMePrompt(selectedCustomer.name));
+  }
+
+  /**
+   * Toggle the "pause" state on a live call.
+   *
+   * Pause semantics here = mic-side silence: the RealtimeSession's
+   * WebRTC transport disables its RTP sender track, so audio stops
+   * flowing to OpenAI until we unmute. The session itself stays
+   * connected (bill keeps running, but conversation state is
+   * preserved — resuming doesn't cost a reconnect).
+   *
+   * On pause we ALSO call `session.interrupt()`. Rationale: if the
+   * rep hit Pause mid-agent-response, the expectation is "go quiet
+   * NOW" — letting the agent finish a long sentence defeats the
+   * purpose. Interrupt cancels any in-flight response server-side
+   * and truncates what's already been buffered for playback.
+   *
+   * No-op when the session isn't connected — the button is disabled
+   * in those states, but a double-click race could still land here.
+   */
+  function togglePause() {
+    const session = sessionRef.current;
+    if (!session) return;
+    if (status !== "connected") return;
+
+    const nextMuted = !muted;
+    if (nextMuted) {
+      session.interrupt();
+    }
+    session.mute(nextMuted);
+    setMuted(nextMuted);
   }
 
   function dismissSummary() {
@@ -705,7 +758,14 @@ export default function Home() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col">
+    // Outer bound: `min-h-screen` on mobile (the long portrait layout
+    // scrolls as a normal document) and `h-screen` on desktop (the
+    // dashboard is designed to fit entirely in one viewport so the
+    // transcript panel doesn't get pushed below the fold). The
+    // desktop override plus `overflow-hidden` hands scroll control to
+    // the inner scrollers (transcript ScrollArea, call-log wrapper,
+    // summary wrapper) instead of the page itself.
+    <div className="flex min-h-screen flex-col lg:h-screen lg:overflow-hidden">
       <TopRail
         selectedId={selectedCustomerId}
         customer={selectedCustomer}
@@ -719,10 +779,10 @@ export default function Home() {
         onSignOut={clearCurrentRep}
       />
 
-      <main className="mx-auto flex w-full max-w-[1400px] flex-1 flex-col lg:flex-row">
+      <main className="mx-auto flex w-full max-w-[1400px] flex-1 flex-col lg:min-h-0 lg:flex-row">
         <section
           className={cn(
-            "flex min-w-0 flex-1 flex-col px-4 pt-5 pb-8 sm:px-6 lg:px-10 lg:pt-7 lg:pb-10"
+            "flex min-w-0 flex-1 flex-col px-4 pt-5 pb-8 sm:px-6 lg:min-h-0 lg:overflow-hidden lg:px-10 lg:pt-7 lg:pb-10"
           )}
           aria-label="Live call stage"
         >
@@ -740,7 +800,10 @@ export default function Home() {
               }
             />
           ) : showSummaryStage ? (
-            <div className="earshot-stagger-hero flex flex-col gap-6">
+            // The summary card can be tall (many key points / next
+            // steps). Section is `lg:overflow-hidden` now, so give
+            // this branch its own internal scroll on desktop.
+            <div className="earshot-stagger-hero flex flex-col gap-6 lg:h-full lg:overflow-y-auto lg:pr-1">
               <div className="flex items-center gap-4">
                 <VoiceOrb phase="idle" size={72} halo />
                 <div className="flex flex-col leading-tight">
@@ -807,7 +870,9 @@ export default function Home() {
                   <div className="earshot-stagger-orb flex flex-col items-center gap-2">
                     <VoiceOrb
                       phase={orbPhase}
-                      amplitude={orbPhase === "listening" ? micAmplitude : 0}
+                      amplitude={
+                        orbPhase === "listening" && !muted ? micAmplitude : 0
+                      }
                       size={104}
                       halo
                     />
@@ -818,6 +883,15 @@ export default function Home() {
                     >
                       {orbLabel}
                     </div>
+                    {/* Live call metrics sit directly under the orb
+                        label now, replacing the old bottom rail. One
+                        glance surfaces state + elapsed + any auto-end
+                        warning + the muted pill when paused. */}
+                    <OrbCallMeta
+                      connectedAt={connectedAt}
+                      remainingMs={sessionRemainingMs}
+                      muted={muted}
+                    />
                   </div>
 
                   <div className="earshot-stagger-hero flex flex-wrap items-center justify-center gap-2.5">
@@ -846,13 +920,58 @@ export default function Home() {
                       </Button>
                     )}
 
+                    {/* In-call controls are icon-only, matching
+                        standard phone-app conventions: PhoneOff to
+                        hang up, Pause/Play to mute/resume the mic.
+                        Dropping the text labels tightens the control
+                        cluster under the orb and mirrors how real
+                        voice UIs (Meet, FaceTime, Zoom) present the
+                        same actions. `aria-label` + `title` carry the
+                        full verb for screen readers and hover. */}
                     {status === "connected" && (
                       <Button
                         variant="destructive"
+                        size="icon"
                         onClick={disconnect}
-                        className="h-9 rounded-full px-5 text-[12px] font-medium uppercase tracking-[0.14em]"
+                        aria-label="End call"
+                        title="End call"
+                        className="h-10 w-10 rounded-full p-0"
                       >
-                        End call
+                        <PhoneOff className="h-4 w-4" />
+                      </Button>
+                    )}
+
+                    {/* Pause / Resume toggle. Only renders while a call
+                        is actually connected — there is nothing to
+                        pause when idle or mid-handshake. When muted,
+                        the button flips to the destructive palette so
+                        it reads as "you are currently paused, click
+                        to resume" at a glance (same visual grammar as
+                        the End-call button sitting next to it). */}
+                    {status === "connected" && (
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={togglePause}
+                        aria-pressed={muted}
+                        aria-label={muted ? "Resume call" : "Pause call"}
+                        title={
+                          muted
+                            ? "Mic is muted — click to resume the conversation"
+                            : "Mute the mic and pause the conversation"
+                        }
+                        className={cn(
+                          "h-10 w-10 rounded-full border-border/70 bg-card/40 p-0",
+                          "hover:bg-card/70 hover:text-foreground",
+                          muted &&
+                            "border-destructive/50 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
+                        )}
+                      >
+                        {muted ? (
+                          <Play className="h-4 w-4" />
+                        ) : (
+                          <Pause className="h-4 w-4" />
+                        )}
                       </Button>
                     )}
 
@@ -862,7 +981,8 @@ export default function Home() {
                       disabled={
                         status !== "connected" ||
                         !selectedCustomer ||
-                        isAgentResponding
+                        isAgentResponding ||
+                        muted
                       }
                       className={cn(
                         "h-9 gap-1.5 rounded-full border-border/70 bg-card/40 px-4 text-[12px]",
@@ -873,6 +993,8 @@ export default function Home() {
                           ? "Pick a customer first"
                           : status !== "connected"
                           ? "Connect before requesting a brief"
+                          : muted
+                          ? "Resume the call before requesting a brief"
                           : isAgentResponding
                           ? "Agent is already speaking"
                           : undefined
@@ -882,6 +1004,14 @@ export default function Home() {
                       Brief me
                     </Button>
                   </div>
+
+                  {/* Pre-call playbook — only renders before a call
+                      connects. Once we're live the transcript takes
+                      over the column and a static coach card would
+                      just compete for attention. */}
+                  {status === "idle" && (
+                    <CoachCard customer={selectedCustomer} />
+                  )}
                 </div>
 
                 <div className="w-full min-w-0 md:flex-1">
@@ -951,7 +1081,14 @@ export default function Home() {
                 </div>
                 <ScrollArea
                   ref={transcriptScrollRef}
-                  className="h-[44vh] min-h-[260px] rounded-lg border border-border/50 bg-card/20 px-3 py-3"
+                  // Mobile: a fixed-vh ScrollArea is fine because the
+                  // page already scrolls as a document. Desktop: the
+                  // outer `lg:h-screen` bounds the viewport, so we let
+                  // the ScrollArea flex into whatever height is left
+                  // after the hero row (`lg:h-full` + `lg:min-h-0`).
+                  // This is what actually keeps the transcript from
+                  // getting clipped off the bottom of the page.
+                  className="h-[44vh] min-h-[260px] rounded-lg border border-border/50 bg-card/20 px-3 py-3 lg:h-full lg:min-h-0"
                 >
                   {mergedFeed.length === 0 ? (
                     <div className="flex h-full min-h-40 items-center justify-center px-6 text-center">
@@ -1034,12 +1171,6 @@ export default function Home() {
           />
         </div>
       </main>
-
-      <BottomRail
-        status={status}
-        connectedAt={connectedAt}
-        remainingMs={sessionRemainingMs}
-      />
 
       <ConsentDialog open={consentOpen} onAccept={acceptConsent} />
     </div>
