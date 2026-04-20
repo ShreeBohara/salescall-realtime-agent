@@ -132,6 +132,24 @@ export default function Home() {
   const userMutedRef = useRef(false);
   const agentSpeakingRef = useRef(false);
   const syncSessionMuteRef = useRef<() => void>(() => {});
+  /**
+   * Debounce timer for the unmute path.
+   *
+   * Tool-using turns emit TWO `response.created` / `response.done`
+   * pairs — the first carries the tool call, the second carries the
+   * spoken confirmation. Between them there's a small (10–200 ms)
+   * gap where response.done has fired but response.created for the
+   * follow-up hasn't yet. If we unmute synchronously on response.done
+   * and the rep's next utterance is already starting, it fires
+   * `speech_started`, wipes the agent's output buffer, and the
+   * confirmation audio never plays. Observed in production logs.
+   *
+   * Instead, unmute is delayed by ~500 ms and cancelled if another
+   * `response.created` fires inside that window. Effectively: mic
+   * stays muted across the whole two-response turn, but unmutes
+   * quickly once the agent is actually done talking.
+   */
+  const unmuteTimerRef = useRef<number | null>(null);
 
   // Conversation data
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
@@ -404,30 +422,41 @@ export default function Home() {
       });
 
       // Auto-mute the mic the instant the server starts a response,
-      // unmute the instant it's done. `response.created` is the
-      // earliest possible signal — it fires BEFORE any audio chunk
-      // streams, which gives us the widest possible protection
-      // window against `speech_started` clipping the agent's output
-      // buffer. `response.done` / `response.cancelled` close the
-      // window.
+      // keep muted through any follow-up responses (tool turns emit
+      // TWO — one for the tool call, one for the spoken confirm),
+      // unmute once it's been quiet for ~500 ms. See
+      // `unmuteTimerRef` above for the full rationale.
       //
-      // We do the mute synchronously via `syncSessionMuteRef` (reads
-      // current refs, pushes `session.mute(...)` immediately) — no
-      // setState round-trip, no race. Same listener also relays the
-      // events to console for debugging.
+      // `response.created` is the earliest possible signal — it
+      // fires BEFORE any audio chunk streams, giving us maximum lead
+      // time. Mutes are synchronous via `syncSessionMuteRef` (reads
+      // refs, pushes `session.mute(...)` immediately) — no setState
+      // round-trip, no race. Same listener also relays events to
+      // console for debugging.
+      const UNMUTE_DEBOUNCE_MS = 500;
       session.on("transport_event", (event) => {
         const type = (event as { type?: string }).type;
         if (!type) return;
 
         if (type === "response.created") {
+          if (unmuteTimerRef.current !== null) {
+            window.clearTimeout(unmuteTimerRef.current);
+            unmuteTimerRef.current = null;
+          }
           agentSpeakingRef.current = true;
           syncSessionMuteRef.current();
         } else if (
           type === "response.done" ||
           type === "response.cancelled"
         ) {
-          agentSpeakingRef.current = false;
-          syncSessionMuteRef.current();
+          if (unmuteTimerRef.current !== null) {
+            window.clearTimeout(unmuteTimerRef.current);
+          }
+          unmuteTimerRef.current = window.setTimeout(() => {
+            agentSpeakingRef.current = false;
+            syncSessionMuteRef.current();
+            unmuteTimerRef.current = null;
+          }, UNMUTE_DEBOUNCE_MS);
         }
 
         if (
@@ -560,10 +589,14 @@ export default function Home() {
     const startedAtSnapshot = connectedAt;
     setStatus("idle");
     setConnectedAt(null);
-    // Clear both mute flags (refs AND state) so the next call starts
-    // unmuted. Without this, a rep who ends a call while paused (or
-    // while the agent was mid-response) would find their mic silently
-    // muted on the next `Start talking`.
+    // Clear both mute flags (refs AND state) AND any pending unmute
+    // debounce timer so the next call starts unmuted. Without this,
+    // a rep who ends a call while paused (or mid-agent-response)
+    // could find their mic silently muted on the next Start talking.
+    if (unmuteTimerRef.current !== null) {
+      window.clearTimeout(unmuteTimerRef.current);
+      unmuteTimerRef.current = null;
+    }
     userMutedRef.current = false;
     agentSpeakingRef.current = false;
     setMuted(false);
