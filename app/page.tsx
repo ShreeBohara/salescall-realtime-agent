@@ -388,19 +388,26 @@ export default function Home() {
       setConnectedAt(Date.now());
       setStatus("connected");
 
-      // Tighten the server VAD silence window. Default is ~500 ms; 350
-      // ms makes end-of-turn detection noticeably snappier without
-      // clipping slow speakers. Below ~300 ms starts cutting off reps
-      // mid-thought, so don't lower further without real-call testing.
-      // Fires a `session.update` event — the server merges it with the
-      // initial config the SDK sent during `connect()`.
+      // Server-VAD silence window. We used to run 350 ms for snappier
+      // end-of-turn, but live testing surfaced a reliability problem:
+      // when the rep pauses mid-thought (breath, "um", or a
+      // two-beat sentence), the server closes the turn at 350 ms,
+      // the model starts generating, and the rep's next breath
+      // registers as a new turn — which interrupts the in-progress
+      // response before it lands. Net effect: the rep hears silence
+      // and sees no tool call, even though the model was about to
+      // act. 500 ms is the server default and keeps the cancel /
+      // delete / multi-sentence flows reliable; re-testing, ~150 ms
+      // of extra perceived latency is an easy trade for never
+      // swallowing an action. Don't lower below 400 ms without
+      // re-running the full cancel/delete script.
       try {
         transport.updateSessionConfig({
           audio: {
             input: {
               turnDetection: {
                 type: "server_vad",
-                silenceDurationMs: 350,
+                silenceDurationMs: 500,
                 prefixPaddingMs: 200,
                 threshold: 0.5,
                 createResponse: true,

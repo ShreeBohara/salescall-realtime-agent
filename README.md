@@ -340,6 +340,7 @@ app/
 │   ├── session/route.ts           # mints ek_... ephemeral token
 │   └── summarize/route.ts         # POST transcript → gpt-4o-mini JSON summary
 ├── hooks/                         # side-effect hooks
+│   ├── use-agent-amplitude.ts     # tracks agent (model) audio amplitude
 │   ├── use-consent.ts             # first-visit consent gate (localStorage)
 │   ├── use-mic-amplitude.ts       # 60Hz FFT → orb amplitude
 │   └── use-session-cap.ts         # 10-min wall clock + auto-disconnect
@@ -369,17 +370,22 @@ components/
 ├── earshot/                       # feature UI
 │   ├── call-log-view.tsx          # full-stage history table
 │   ├── consent-dialog.tsx         # first-visit mic / data disclosure
+│   ├── customer-picker-card.tsx   # customer selector dropdown card
 │   ├── inline-tool-call-row.tsx   # tool-call card in the transcript feed
 │   ├── ledger-panel.tsx           # Tasks / Notes / Actions tabs
+│   ├── note-row.tsx               # individual note row in the ledger
 │   ├── orb-call-meta.tsx          # elapsed + auto-end + muted pill under orb
 │   ├── post-call-summary-card.tsx # MEDDIC summary renderer (4 phases)
 │   ├── pre-auth-shell.tsx         # clean splash behind the onboarding modal
 │   ├── pre-call-briefing.tsx      # customer dossier next to the orb
 │   ├── rep-onboarding.tsx         # first-visit "who are you?" modal
 │   ├── rep-profile-chip.tsx       # top-right signed-in chip + sign-out
+│   ├── status-badge.tsx           # reusable status pill (updated/cancelled/…)
+│   ├── task-row.tsx               # individual task row in the ledger
+│   ├── tool-call-card.tsx         # generic tool-call display card
 │   ├── top-rail.tsx               # customer picker + call-log + profile
 │   └── transcript-line.tsx        # editable user line + divergence chip
-├── voice-orb.tsx                  # 5-state reactive orb
+├── voice-orb.tsx                  # canvas waveform visualizer (simplex noise, per-phase HSL palettes)
 └── ui/                            # shadcn primitives (dialog, popover, tabs…)
 lib/utils.ts                       # shadcn cn() helper
 ```
