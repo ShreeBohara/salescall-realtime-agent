@@ -368,6 +368,31 @@ export default function Home() {
         showToolCompletionToast(tool.name, parsed);
       });
 
+      // Debug telemetry for turn-detection bugs.
+      //
+      // When a user ask goes silent (no tool call, no confirmation,
+      // but the action eventually lands on the NEXT utterance), the
+      // most useful signal is the sequence of server turn events:
+      // speech_started, speech_stopped, audio_buffer.committed,
+      // response.created, response.done, response.cancelled. We
+      // relay just those to the console so silence bugs are
+      // diagnosable without instrumenting the SDK. Everything else
+      // stays off to keep the console scannable.
+      session.on("transport_event", (event) => {
+        const type = (event as { type?: string }).type;
+        if (!type) return;
+        if (
+          type.includes("speech_started") ||
+          type.includes("speech_stopped") ||
+          type === "input_audio_buffer.committed" ||
+          type === "response.created" ||
+          type === "response.done" ||
+          type === "response.cancelled"
+        ) {
+          console.log(`[vad] ${type}`, event);
+        }
+      });
+
       session.on("history_updated", (history) => {
         const next = historyToTranscript(history);
         setTranscript(next);
@@ -410,35 +435,37 @@ export default function Home() {
       // CFO" is understood as complete. Pauses, um's, and ambient
       // hiss no longer close the turn prematurely.
       //
-      // `eagerness: 'low'` is deliberate, not the default.
+      // `eagerness: 'high'` is deliberate for this product.
       //
-      // With 'auto' (the SDK default) we still hit silent failures on
-      // rapid-fire asks: rep says utterance A, model starts
-      // responding, rep starts utterance B before A finishes →
-      // `input_audio_buffer.speech_started` fires → the SDK's
-      // WebRTC `interrupt()` handler UNCONDITIONALLY sends
-      // `response.cancel` + `output_audio_buffer.clear`. The
-      // `interrupt_response` session param does not control this
-      // (it's dead code for WebRTC — verified against SDK source).
+      // Previous rounds tried 'auto' and 'low'. Both produced the
+      // same failure mode in live testing: a rep finishes a short
+      // declarative ask ("save a note that pricing concerns came
+      // up", "change that to Thursday") and the model stays silent
+      // until the rep says ANYTHING else — at which point the
+      // original ask's tool call lands. Root cause: semantic VAD
+      // wasn't committing the turn. With low eagerness the VAD sits
+      // and waits for possible continuation; with auto it's
+      // inconsistent. Either way, the turn only commits when a new
+      // `speech_started` event forces it.
       //
-      // The only way to reduce the frequency of speech_started
-      // mid-response is to make semantic VAD more patient about
-      // declaring turns complete. `'low'` eagerness gives the model
-      // extra breathing room, so short confirmations like
-      // "Reminder set." finish playing before the rep's next
-      // utterance kicks in. Trade-off: end-of-turn feels ~200 ms
-      // slower — worth it to stop dropping tool confirmations on
-      // back-to-back asks.
+      // Sales-rep speech in this product is command-shaped — short,
+      // imperative, one clean beat ("Remind me to call the CFO
+      // Friday."). There IS no continuation coming. We want the VAD
+      // to commit the moment the ask is complete. `'high'` does
+      // exactly that: the server closes the turn as soon as it has
+      // enough signal, the model responds immediately, tool calls
+      // land before the rep moves on.
       //
-      // `createResponse: true` keeps the server firing responses
-      // automatically.
+      // Trade-off: reps who pause mid-sentence to think (rare in
+      // this product, common in free-form dictation) may have their
+      // turn closed early. Acceptable for Earshot's UX.
       try {
         transport.updateSessionConfig({
           audio: {
             input: {
               turnDetection: {
                 type: "semantic_vad",
-                eagerness: "low",
+                eagerness: "high",
                 createResponse: true,
               },
             },
