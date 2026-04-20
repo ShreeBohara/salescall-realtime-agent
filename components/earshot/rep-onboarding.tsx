@@ -89,16 +89,7 @@ export function RepOnboarding({
         onPointerDownOutside={(e) => e.preventDefault()}
         onInteractOutside={(e) => e.preventDefault()}
         showCloseButton={false}
-        // Force viewport-centering with `!important`. Radix's default
-        // `fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2`
-        // combined with tailwindcss-animate's `zoom-in-95` keyframes
-        // sometimes loses the centering translates mid-animation,
-        // leaving the dialog with its top-left corner at viewport
-        // center (i.e. visually stuck in the bottom-right quadrant).
-        // Explicit `!` prefixes win over the animation's composite
-        // transform variables and guarantee the modal lands dead-
-        // center regardless of splash-shell layout above.
-        className="!fixed !top-1/2 !left-1/2 !-translate-x-1/2 !-translate-y-1/2 sm:max-w-md"
+        className="sm:max-w-md"
       >
         {/* Copy contract: the splash behind us is deliberately empty
          *  — the Earshot brand mark now lives HERE, inside the card,
