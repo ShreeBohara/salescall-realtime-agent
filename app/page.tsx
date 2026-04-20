@@ -408,21 +408,27 @@ export default function Home() {
       // wipe the agent's output audio buffer (hardcoded SDK
       // behavior for WebRTC transport).
       //
-      // Two events, no timers:
+      // Mute trigger:
       //   - response.created → mute (fires before audio streams,
       //     covers both the tool-call response AND its spoken
-      //     follow-up because mute is already on when the second
-      //     response.created arrives).
-      //   - audio_stopped    → unmute (fires ONCE per turn, after
-      //     the agent's final audio chunk has been played, whether
-      //     the turn had one response pair or a tool + confirm
-      //     pair).
+      //     follow-up because the second response.created arrives
+      //     while mute is already on).
       //
-      // audio_stopped is mapped from `response.output_audio.done`
-      // in the transport layer, so it covers the whole turn's
-      // audio even across tool-call round trips. This replaced a
-      // debounce-based approach that had off-by-milliseconds races
-      // during the gap between the two responses of a tool turn.
+      // Unmute triggers (idempotent; whichever fires first wins):
+      //   - audio_stopped   → primary. Fires after the final audio
+      //     chunk has been sent for the response. Normal path.
+      //   - response.done   → safety net. Fires when the response
+      //     logically completes, even for silent responses where
+      //     gpt-realtime occasionally emits a response.created /
+      //     response.done pair with NO audio. Without this, a
+      //     silent response would leave the mic stuck muted
+      //     forever — observed in live testing.
+      //   - audio_interrupted → explicit interrupt (Pause button).
+      //
+      // Ref-based sync is synchronous, so the mute-unmute-remute
+      // transition between a tool-call response and its confirm
+      // response happens on consecutive ticks — the gap is too
+      // short (~microseconds) for the rep's speech to leak through.
       session.on("audio_stopped", () => {
         agentSpeakingRef.current = false;
         syncSessionMuteRef.current();
@@ -438,6 +444,15 @@ export default function Home() {
 
         if (type === "response.created") {
           agentSpeakingRef.current = true;
+          syncSessionMuteRef.current();
+        } else if (type === "response.done" || type === "response.cancelled") {
+          // Safety-net unmute. In a tool turn, this fires between
+          // the tool response and the confirmation response — we
+          // briefly unmute, then immediately re-mute on the next
+          // response.created (same tick via the synchronous ref
+          // sync). For silent (no-audio) responses this is the
+          // ONLY unmute signal, so without it the mic stays stuck.
+          agentSpeakingRef.current = false;
           syncSessionMuteRef.current();
         }
 
