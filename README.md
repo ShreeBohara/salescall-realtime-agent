@@ -4,8 +4,8 @@ A voice agent for a sales rep: press one button, talk to it, and watch real tool
 calls (notes, follow-ups) show up as structured **Agent Actions** the moment
 they fire.
 
-Built as a 4-day case study for [Instalily](https://www.instalily.ai). Voice is
-the interface; the UI is deliberately minimal.
+A personal project exploring the OpenAI Realtime API. Voice is the interface;
+the UI is deliberately minimal.
 
 > **Live demo:** [salescall-realtime-agent.vercel.app](https://salescall-realtime-agent.vercel.app)
 > **Voice:** OpenAI Realtime API (`gpt-realtime`, `marin` voice), over WebRTC.
@@ -261,35 +261,6 @@ it doesn't take a side on which is correct.
 > In production, add a `resolve_entity` fuzzy-match against a real CRM
 > before the mutation lands. The divergence chip becomes a click-to-
 > disambiguate affordance against actual customer records.
-
----
-
-## Brief scoreboard
-
-Against the Instalily case-study brief (the source brief is a local doc, not in
-this repo):
-
-### Requirements
-
-- [x] Next.js App Router + shadcn + Tailwind
-- [x] Real-time voice in/out via OpenAI Realtime API
-- [x] Voice flow: ask questions, capture notes, create follow-ups
-- [x] UI visualization of agent actions / tool calls (name, args, status, result, duplicate warnings)
-- [x] Transport choice explained ([WebRTC, see above](#1-webrtc-over-websocket))
-- [x] ≥1 real tool integration — **seven wired**: one CRM lookup (`get_customer_context`) + six mutating across two lifecycles (notes: save / update / delete, tasks: create / update / cancel)
-
-### Additional goals (brief asks for ≥2, we have all four)
-
-- [x] Vercel AI Elements on top of shadcn (`<Tool>` primitive drives the action feed)
-- [x] Real-time transcription with full trust & correction UI — streaming dim-to-solid text, **editable user lines with undo**, **transcript ↔ tool-arg divergence chip** that resolves bidirectionally
-- [x] Active state panels for both lifecycles — **Saved notes** and **Follow-up tasks** cards render live state with `updated` / `cancelled` / `deleted` badges
-- [ ] Full responsive polish — partial; readable on mobile, not yet thumb-tuned
-
-### Deliverables
-
-- [x] Deployed URL — [salescall-realtime-agent.vercel.app](https://salescall-realtime-agent.vercel.app)
-- [x] Public GitHub — you're on it
-- [ ] 5-min presentation — drafted separately for the interview
 
 ---
 

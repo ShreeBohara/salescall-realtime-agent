@@ -41,12 +41,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# local case-study docs / instructions (not for public repo)
-Docs/
-.gitignore.backup
-
-# local cross-session agent context (private, not for public repo)
-.context/
+# local agent / IDE config
 .claude/
 
 # IDE / editor

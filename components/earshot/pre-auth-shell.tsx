@@ -57,11 +57,11 @@ export function PreAuthShell({ children }: { children?: React.ReactNode }) {
       <main className="relative z-10 flex-1" aria-hidden="true" />
 
       {/* Footer signature — mirrors the dashboard's bottom-rail
-          attribution so the case-study credit stays visible even on
-          the pre-auth screen. Kept at a lower opacity so it doesn't
+          attribution so the wordmark stays visible even on the
+          pre-auth screen. Kept at a lower opacity so it doesn't
           pull attention from the modal. */}
       <footer className="relative z-10 flex h-10 items-center justify-end px-4 text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70 sm:px-6 lg:px-8">
-        instalily case study · apr 2026
+        earshot · voice-first sales copilot
       </footer>
 
       {children}
