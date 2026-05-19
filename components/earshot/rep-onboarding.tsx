@@ -39,7 +39,7 @@ import {
 export function RepOnboarding({
   open,
   onComplete,
-  defaultName = "Shree",
+  defaultName = "",
 }: {
   open: boolean;
   onComplete: (name: string) => void;
@@ -78,7 +78,7 @@ export function RepOnboarding({
       // Radix fires onOpenChange for backdrop click, Escape, and the
       // close button (there isn't one here) — we want none of those
       // paths to leave us nameless.
-      onOpenChange={() => {}}
+      onOpenChange={() => { }}
     >
       <DialogContent
         // Prevent the Radix-default Escape-to-close and
@@ -132,7 +132,7 @@ export function RepOnboarding({
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Shree"
+              placeholder="First name"
               autoComplete="off"
               spellCheck={false}
               aria-label="Your name"
