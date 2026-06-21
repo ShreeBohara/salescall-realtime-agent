@@ -44,6 +44,22 @@ next-env.d.ts
 # local agent / IDE config
 .claude/
 
+# AI assistant tool scaffolding — skill installers replicate the same files into
+# every tool's config dir. Keep these local; don't ship them in the repo.
+.agent/
+.codebuddy/
+.codex/
+.continue/
+.cursor/
+.gemini/
+.kiro/
+.opencode/
+.qoder/
+.roo/
+.trae/
+.windsurf/
+.github/prompts/
+
 # IDE / editor
 .idea/
 .vscode/*
