@@ -53,13 +53,16 @@ export function RepOnboarding({
   // the default pre-filled, not whatever the previous session typed.
   useEffect(() => {
     if (!open) return;
-    setName(defaultName);
+    const resetId = window.setTimeout(() => setName(defaultName), 0);
     // Defer to the next tick so the dialog has mounted its input.
-    const id = window.setTimeout(() => {
+    const focusId = window.setTimeout(() => {
       inputRef.current?.focus();
       inputRef.current?.select();
     }, 50);
-    return () => window.clearTimeout(id);
+    return () => {
+      window.clearTimeout(resetId);
+      window.clearTimeout(focusId);
+    };
   }, [open, defaultName]);
 
   const trimmed = name.trim();

@@ -20,10 +20,7 @@ export function useMicAmplitude(active: boolean): number {
   const [amplitude, setAmplitude] = useState(0);
 
   useEffect(() => {
-    if (!active) {
-      setAmplitude(0);
-      return;
-    }
+    if (!active) return;
 
     let cancelled = false;
     let rafId: number | null = null;
@@ -84,9 +81,8 @@ export function useMicAmplitude(active: boolean): number {
           /* ignore */
         });
       }
-      setAmplitude(0);
     };
   }, [active]);
 
-  return amplitude;
+  return active ? amplitude : 0;
 }

@@ -36,7 +36,6 @@ import type { CallSummary, MeddicSummary, SummaryState } from "@/app/lib/types";
  */
 export function PostCallSummaryCard({
   state,
-  onDismiss,
   onRetry,
 }: {
   state: SummaryState;
