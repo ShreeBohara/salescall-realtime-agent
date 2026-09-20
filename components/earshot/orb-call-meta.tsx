@@ -57,16 +57,11 @@ export function OrbCallMeta({
    */
   muted: boolean;
 }) {
-  const [elapsedMs, setElapsedMs] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    if (!connectedAt) {
-      setElapsedMs(0);
-      return;
-    }
-    const tick = () => setElapsedMs(Date.now() - connectedAt);
-    tick();
-    const id = window.setInterval(tick, 1000);
+    if (!connectedAt) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [connectedAt]);
 
@@ -78,6 +73,7 @@ export function OrbCallMeta({
 
   const showAutoEnd =
     remainingMs != null && remainingMs < AUTO_END_WARNING_MS;
+  const elapsedMs = now - connectedAt;
 
   return (
     <div

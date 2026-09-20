@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -28,20 +28,19 @@ export function LedgerPanel({
   onClearNotes: () => void;
   onClearActions: () => void;
 }) {
-  const [tab, setTab] = useState<LedgerTab>("tasks");
-  const userTouchedRef = useRef(false);
-
-  // Auto-default the tab when user hasn't touched it yet.
-  useEffect(() => {
-    if (userTouchedRef.current) return;
-    if (tasks.length > 0) setTab("tasks");
-    else if (notes.length > 0) setTab("notes");
-    else if (toolCalls.length > 0) setTab("actions");
-  }, [tasks.length, notes.length, toolCalls.length]);
+  const [selectedTab, setSelectedTab] = useState<LedgerTab | null>(null);
+  const automaticTab: LedgerTab =
+    tasks.length > 0
+      ? "tasks"
+      : notes.length > 0
+        ? "notes"
+        : toolCalls.length > 0
+          ? "actions"
+          : "tasks";
+  const tab = selectedTab ?? automaticTab;
 
   const handleTabChange = (next: string) => {
-    userTouchedRef.current = true;
-    setTab(next as LedgerTab);
+    setSelectedTab(next as LedgerTab);
   };
 
   return (

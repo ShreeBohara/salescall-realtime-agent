@@ -28,10 +28,7 @@ export function useAgentAmplitude(
   const [amplitude, setAmplitude] = useState(0);
 
   useEffect(() => {
-    if (!active) {
-      setAmplitude(0);
-      return;
-    }
+    if (!active) return;
     const audioEl = audioRef.current;
     if (!audioEl) return;
 
@@ -111,9 +108,8 @@ export function useAgentAmplitude(
           /* ignore */
         });
       }
-      setAmplitude(0);
     };
   }, [active, audioRef]);
 
-  return amplitude;
+  return active ? amplitude : 0;
 }

@@ -15,12 +15,16 @@ export function useConsent() {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    try {
-      const accepted = window.localStorage.getItem(CONSENT_KEY);
-      if (accepted !== "yes") setOpen(true);
-    } catch {
-      setOpen(true);
-    }
+    const id = window.setTimeout(() => {
+      try {
+        const accepted = window.localStorage.getItem(CONSENT_KEY);
+        if (accepted !== "yes") setOpen(true);
+      } catch {
+        setOpen(true);
+      }
+    }, 0);
+
+    return () => window.clearTimeout(id);
   }, []);
 
   const accept = useCallback(() => {
