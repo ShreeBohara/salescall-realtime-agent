@@ -81,6 +81,13 @@ export function useMicAmplitude(active: boolean): number {
           /* ignore */
         });
       }
+      // Reset so a later activation can't briefly surface this call's last
+      // value. The public getter is gated on `active`, but the state itself
+      // survives the toggle, and nothing overwrites it until the analyser
+      // is live — a getUserMedia round-trip away, long enough to paint the
+      // orb at the previous call's size. Safe in cleanup: the rule that
+      // prompted #2 only flags setState in the effect *body*.
+      setAmplitude(0);
     };
   }, [active]);
 
