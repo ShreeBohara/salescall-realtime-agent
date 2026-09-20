@@ -39,7 +39,6 @@ export function PostCallSummaryCard({
   onRetry,
 }: {
   state: SummaryState;
-  onDismiss: () => void;
   onRetry: () => void;
 }) {
   const [copied, setCopied] = useState(false);

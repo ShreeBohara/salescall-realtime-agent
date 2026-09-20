@@ -1077,7 +1077,6 @@ export default function Home() {
               </div>
               <PostCallSummaryCard
                 state={summary}
-                onDismiss={dismissSummary}
                 onRetry={() =>
                   summary.phase === "error" &&
                   requestSummary(summary.retryPayload)

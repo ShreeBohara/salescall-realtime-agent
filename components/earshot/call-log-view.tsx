@@ -16,7 +16,9 @@ import type { SummaryState } from "@/app/lib/types";
  *   table   → summary.phase is anything but "ready": render the
  *             tabular log with click-to-open rows
  *   detail  → summary.phase === "ready": render the selected call's
- *             PostCallSummaryCard with a "back to log" control
+ *             PostCallSummaryCard. The "back to log" control belongs
+ *             to this view's own header rail below — the card
+ *             renders no dismiss affordance of its own.
  *
  * Reusing `SummaryState` means the log shares the same selection
  * machinery as the automatic post-call view; swapping in a record
@@ -152,7 +154,6 @@ export function CallLogView({
       {inDetail ? (
         <PostCallSummaryCard
           state={summaryState}
-          onDismiss={onCloseDetail}
           onRetry={onRetry}
         />
       ) : history.length === 0 ? (
